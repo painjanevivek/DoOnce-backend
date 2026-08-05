@@ -57,11 +57,22 @@ class ServerWorkflowStore implements WorkflowStore {
   public async listAuditEvents(workflowId: string): Promise<WorkflowAuditEvent[]> { return this.events.filter((event) => event.workflowId === workflowId); }
 }
 
+class FailingWorkflowStore extends ServerWorkflowStore {
+  public override async listWorkflows(): Promise<[]> { throw new Error("database password=not-for-clients"); }
+}
+
 async function workflowApp(operationalControls?: OperationalControls) {
   return buildServer({
     authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
     workflowService: new WorkflowService(new ServerWorkflowStore()),
     ...(operationalControls ? { operationalControls } : {}),
+  });
+}
+
+async function failingWorkflowApp() {
+  return buildServer({
+    authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
+    workflowService: new WorkflowService(new FailingWorkflowStore()),
   });
 }
 
@@ -75,6 +86,27 @@ test("health endpoint sends explicit browser security headers", async (t) => {
   assert.equal(response.headers["x-content-type-options"], "nosniff");
   assert.equal(response.headers["x-frame-options"], "DENY");
   assert.equal(response.headers["referrer-policy"], "strict-origin-when-cross-origin");
+});
+
+test("unexpected API errors do not disclose internal details", async (t) => {
+  const app = await failingWorkflowApp();
+  t.after(async () => app.close());
+  const signedUp = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "error-boundary@example.com", password: "correct-horse-battery-staple", tenantName: "Error Boundary" },
+  });
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/v1/workflows",
+    headers: { cookie: signedUp.headers["set-cookie"] ?? "" },
+  });
+
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.json(), { error: "Unexpected service error." });
+  assert.doesNotMatch(response.body, /password|database/i);
 });
 
 test("policy API blocks a prohibited action", async (t) => {

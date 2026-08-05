@@ -58,6 +58,8 @@ Draft creation and publication each write an immutable audit event containing ID
 
 All state-changing authentication and workflow routes require a configured browser `Origin`; credentialed CORS is enabled only for the explicit `DOONCE_ALLOWED_ORIGINS` allowlist.
 
+Unexpected API failures return a generic client-safe error. Structured server logs retain the error type, code, status and stack locations without recording error messages that could contain sensitive values.
+
 ### Operational controls
 
 - Set `DOONCE_WORKFLOW_CHANGES_ENABLED=false` to block draft creation and publication while keeping the dashboard readable.

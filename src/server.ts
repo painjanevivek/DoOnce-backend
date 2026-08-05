@@ -2,7 +2,7 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import Fastify from "fastify";
+import Fastify, { type FastifyError } from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
@@ -73,6 +73,20 @@ export async function buildServer(options: ServerOptions = {}) {
   });
   await app.register(cookie);
   await app.register(rateLimit, { global: false, max: 100, timeWindow: "1 minute" });
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    request.log.error({
+      error: {
+        name: error.name,
+        code: error.code,
+        statusCode: error.statusCode,
+        stack: error.stack?.split(/\r?\n/).slice(1).join("\n"),
+      },
+    }, "Unhandled API error");
+    if (error.validation) return reply.code(400).send({ error: "Invalid request." });
+    if (error.statusCode === 429) return reply.code(429).send({ error: "Too many requests. Please try again shortly." });
+    if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) return reply.code(error.statusCode).send({ error: "Request rejected." });
+    return reply.code(500).send({ error: "Unexpected service error." });
+  });
 
   app.get("/health", async () => ({ status: "ok", service: "doonce-api" }));
 
