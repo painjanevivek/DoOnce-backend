@@ -59,6 +59,7 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 - `GET /api/v1/workflows/:id/audit-events` returns the tenant-scoped, append-only workflow lifecycle events.
 - `POST /api/v1/workflows/:id/run-receipts/import` accepts a user-confirmed local receipt only from an authenticated dashboard request with an approved Origin. The server derives the tenant, actor, active version, step IDs, and receipt timestamps; it accepts only the explicit local report-demo workflow shape.
 - `GET /api/v1/workflows/:id/run-receipts` returns the newest 50 redacted receipts for that workflow within the authenticated tenant. It never returns browser page content, action values, tenant IDs, or actor IDs.
+- `GET /api/v1/workflows/:id/run-health?version=:version` returns only the selected version's bounded receipt counts, success rate, and stable pause-reason totals. It marks evidence for the 50-run/90-percent manual reliability threshold; it cannot schedule or run a workflow.
 
 Receipt imports are immutable. Re-saving the same local receipt returns a safe conflict response rather than creating a duplicate or exposing a database error.
 Owners, builders, and runners may save verified receipts; reviewers remain read-only.

@@ -132,6 +132,14 @@ class DuplicateReceiptStore extends ServerRunReceiptStore {
   }
 }
 
+class HealthReceiptStore extends ServerRunReceiptStore {
+  public constructor(private readonly receipts: RunReceipt[]) { super(); }
+
+  public override async listLocalDemoReceipts(): Promise<RunReceipt[]> {
+    return this.receipts;
+  }
+}
+
 class ServerSupportReportStore implements SupportReportStore {
   public readonly reports: Array<{ category: SupportReportCategory; user: AuthenticatedUser }> = [];
 
@@ -418,6 +426,24 @@ test("lists tenant-scoped run receipt history for an authenticated dashboard ses
   assert.deepEqual(authorized.json().receipts.map((receipt: RunReceipt) => ({ id: receipt.id, outcome: receipt.outcome, pauseReason: receipt.pauseReason })), [{ id: receiptId, outcome: "paused", pauseReason: "slow-network" }]);
   assert.equal("tenantId" in authorized.json().receipts[0], false);
   assert.equal("actorId" in authorized.json().receipts[0], false);
+});
+
+test("reports bounded per-version run health without returning individual receipt data", async (t) => {
+  const receipts: RunReceipt[] = [
+    ...Array.from({ length: 45 }, (_, index) => ({ id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, tenantId: "10000000-0000-4000-8000-000000000001", workflowId: "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", workflowVersion: 1, actorId: "20000000-0000-4000-8000-000000000001", outcome: "completed" as const, stepOutcomes: [], startedAt: "2026-08-05T00:00:00.000Z", finishedAt: "2026-08-05T00:00:00.000Z" })),
+    ...Array.from({ length: 5 }, (_, index) => ({ id: `00000000-0000-4000-8001-${String(index).padStart(12, "0")}`, tenantId: "10000000-0000-4000-8000-000000000001", workflowId: "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", workflowVersion: 1, actorId: "20000000-0000-4000-8000-000000000001", outcome: "paused" as const, pauseReason: "slow-network", stepOutcomes: [], startedAt: "2026-08-05T00:00:00.000Z", finishedAt: "2026-08-05T00:00:00.000Z" })),
+  ];
+  const app = await workflowApp(undefined, new HealthReceiptStore(receipts));
+  t.after(async () => app.close());
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "health-owner@example.com", password: "correct-horse-battery-staple", tenantName: "Health workspace" } });
+  const url = "/api/v1/workflows/a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b/run-health?version=1";
+  const unauthorized = await app.inject({ method: "GET", url });
+  const authorized = await app.inject({ method: "GET", url, headers: { cookie: signedUp.headers["set-cookie"] ?? "" } });
+
+  assert.equal(unauthorized.statusCode, 401);
+  assert.equal(authorized.statusCode, 200);
+  assert.deepEqual(authorized.json(), { health: { workflowVersion: 1, sampleSize: 50, completedRuns: 45, pausedRuns: 5, successRate: 90, pauseReasons: { "slow-network": 5 }, meetsManualReliabilityThreshold: true } });
+  assert.doesNotMatch(authorized.body, /tenantId|actorId|00000000/i);
 });
 
 test("reports a duplicate local receipt without exposing database details", async (t) => {

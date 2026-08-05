@@ -6,6 +6,7 @@ import Fastify, { type FastifyError } from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
 import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
+import { summarizeRunHealth } from "./runner/run-health.js";
 import type { RunReceipt } from "./runner/run-receipt.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
 import { supportReportCategories, type SupportReportCategory, type SupportReportStore } from "./support/postgres-support-report-store.js";
@@ -272,6 +273,22 @@ export async function buildServer(options: ServerOptions = {}) {
     const user = await auth.currentUser(request.cookies[sessionCookieName]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     return { receipts: (await runReceipts.listLocalDemoReceipts(request.params.id, user)).map(redactRunReceipt) };
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { version?: string } }>("/api/v1/workflows/:id/run-health", {
+    schema: {
+      params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } },
+      querystring: { type: "object", required: ["version"], additionalProperties: false, properties: { version: { type: "string", pattern: "^[1-9][0-9]{0,8}$" } } },
+    },
+  }, async (request, reply) => {
+    const auth = options.authService;
+    const runReceipts = options.runReceiptStore;
+    if (!auth || !runReceipts) return reply.code(503).send({ error: "Run health reporting is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    const workflowVersion = Number(request.query.version);
+    if (!Number.isSafeInteger(workflowVersion) || workflowVersion < 1) return reply.code(400).send({ error: "Invalid workflow version." });
+    return { health: summarizeRunHealth(await runReceipts.listLocalDemoReceipts(request.params.id, user), workflowVersion) };
   });
 
   app.post<{ Params: { id: string }; Body: { sourceId?: unknown; outcome?: unknown; pauseReason?: unknown } }>("/api/v1/workflows/:id/run-receipts/import", {
