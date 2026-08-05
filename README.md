@@ -64,6 +64,8 @@ Unexpected API failures return a generic client-safe error. Structured server lo
 
 `src/runner/run-state-machine.ts` defines the only allowed lifecycle for a future runner: validate, preview, execute, verify, then complete. Any uncertain or illegal transition pauses; cancellation and terminal states cannot resume. It intentionally contains no browser authority or network calls.
 
+`PostgresRunReceiptStore` persists only terminal, redacted receipts through the same tenant-scoped transaction boundary. It is not exposed as a “run now” API until a local browser bridge can execute and verify an allowed step.
+
 ## Pre-launch policy drafts
 
 Internal drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). They are intentionally marked for legal review and must not be published until the company, jurisdiction, and data-processing placeholders are approved.

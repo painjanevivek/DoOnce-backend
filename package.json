@@ -13,7 +13,7 @@
     "db:migrate": "tsx src/database/migrate.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test test/action-policy.test.ts test/workflow-schema.test.ts test/workflow-versioning.test.ts test/workflow-service.test.ts test/migrator.test.ts test/tenant-context.test.ts test/auth-service.test.ts test/server.test.ts test/run-state-machine.test.ts test/run-receipt.test.ts"
+    "test": "tsx --test test/action-policy.test.ts test/workflow-schema.test.ts test/workflow-versioning.test.ts test/workflow-service.test.ts test/migrator.test.ts test/tenant-context.test.ts test/auth-service.test.ts test/server.test.ts test/run-state-machine.test.ts test/run-receipt.test.ts test/postgres-run-receipt-store.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
