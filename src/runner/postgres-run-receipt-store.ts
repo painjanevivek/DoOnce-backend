@@ -15,6 +15,13 @@ export interface LocalDemoReceiptStore {
   listLocalDemoReceipts(workflowId: string, user: AuthenticatedUser): Promise<RunReceipt[]>;
 }
 
+export class ReceiptAlreadyImportedError extends Error {
+  public constructor() {
+    super("This local receipt has already been imported.");
+    this.name = "ReceiptAlreadyImportedError";
+  }
+}
+
 export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
   public constructor(private readonly pool: Pool) {}
 
@@ -82,6 +89,9 @@ export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
         );
         return receipt;
       });
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new ReceiptAlreadyImportedError();
+      throw error;
     } finally {
       client.release();
     }
@@ -90,4 +100,8 @@ export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
 
 function isSupportedLocalDemo(workflow: WorkflowDraft): boolean {
   return workflow.steps.length > 0 && workflow.steps.every((step) => step.kind === "download" && ["localhost", "127.0.0.1"].includes(step.domain) && step.path === "/demo/reports");
+}
+
+function isUniqueViolation(error: unknown): error is { code: string } {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "23505";
 }

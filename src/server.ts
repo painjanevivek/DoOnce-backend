@@ -5,7 +5,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyError } from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
-import type { LocalDemoReceiptImport, LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
+import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
 import {
   evaluateActionPolicy,
@@ -272,9 +272,14 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     const { sourceId, outcome, pauseReason } = request.body;
     if (typeof sourceId !== "string" || (outcome !== "completed" && outcome !== "paused") || ((outcome === "paused") !== (typeof pauseReason === "string"))) return reply.code(400).send({ error: "Invalid run receipt import." });
-    const receipt = await runReceipts.importLocalDemoReceipt(request.params.id, { sourceId, outcome, ...(typeof pauseReason === "string" ? { pauseReason } : {}) } satisfies LocalDemoReceiptImport, user);
-    if (!receipt) return reply.code(404).send({ error: "Workflow not found." });
-    return reply.code(201).send({ receipt });
+    try {
+      const receipt = await runReceipts.importLocalDemoReceipt(request.params.id, { sourceId, outcome, ...(typeof pauseReason === "string" ? { pauseReason } : {}) } satisfies LocalDemoReceiptImport, user);
+      if (!receipt) return reply.code(404).send({ error: "Workflow not found." });
+      return reply.code(201).send({ receipt });
+    } catch (error) {
+      if (error instanceof ReceiptAlreadyImportedError) return reply.code(409).send({ error: "This receipt was already saved." });
+      throw error;
+    }
   });
 
   app.post<{ Body: unknown }>("/api/v1/workflows", {

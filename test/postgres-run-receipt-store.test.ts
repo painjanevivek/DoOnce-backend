@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Pool } from "pg";
 import type { AuthenticatedUser } from "../src/auth/auth-service.js";
-import { PostgresRunReceiptStore } from "../src/runner/postgres-run-receipt-store.js";
+import { PostgresRunReceiptStore, ReceiptAlreadyImportedError } from "../src/runner/postgres-run-receipt-store.js";
 import { createRunReceipt } from "../src/runner/run-receipt.js";
+import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 
 const tenantId = "b0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
 const actorId = "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
@@ -29,4 +30,27 @@ test("refuses a cross-tenant receipt before opening a database connection", asyn
 
   await assert.rejects(() => store.save(receipt, user), /Receipt identity/);
   assert.equal(connected, false);
+});
+
+test("maps a receipt uniqueness violation to a safe duplicate-import error", async () => {
+  const queries: string[] = [];
+  let released = false;
+  const store = new PostgresRunReceiptStore({
+    connect: async () => ({
+      query: async (sql: string) => {
+        queries.push(sql);
+        if (sql.startsWith("SELECT version")) return { rows: [{ version: 1, definition: { ...safeReportWorkflowFixture, allowedDomains: ["localhost"], steps: safeReportWorkflowFixture.steps.map((step) => ({ ...step, domain: "localhost", path: "/demo/reports" })) } }] };
+        if (sql.startsWith("INSERT INTO workflow_run_receipts")) throw Object.assign(new Error("unique constraint"), { code: "23505" });
+        return { rows: [] };
+      },
+      release: () => { released = true; },
+    }),
+  } as unknown as Pool);
+
+  await assert.rejects(
+    () => store.importLocalDemoReceipt("a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", { sourceId: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "completed" }, user),
+    ReceiptAlreadyImportedError,
+  );
+  assert.ok(queries.includes("ROLLBACK"));
+  assert.equal(released, true);
 });

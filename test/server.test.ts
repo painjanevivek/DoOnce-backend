@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildServer } from "../src/server.js";
 import { AuthService, type AccountRecord, type AuthenticatedUser, type AuthStore, type MembershipRole } from "../src/auth/auth-service.js";
-import type { LocalDemoReceiptImport, LocalDemoReceiptStore } from "../src/runner/postgres-run-receipt-store.js";
+import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "../src/runner/postgres-run-receipt-store.js";
 import type { RunReceipt } from "../src/runner/run-receipt.js";
 import type { SessionIdentity } from "../src/auth/session-token.js";
 import type { WorkflowDraft } from "../src/workflow/schema.js";
@@ -104,6 +104,12 @@ class ServerRunReceiptStore implements LocalDemoReceiptStore {
       startedAt: "2026-08-05T00:00:00.000Z",
       finishedAt: "2026-08-05T00:00:00.000Z",
     };
+  }
+}
+
+class DuplicateReceiptStore extends ServerRunReceiptStore {
+  public override async importLocalDemoReceipt(): Promise<RunReceipt> {
+    throw new ReceiptAlreadyImportedError();
   }
 }
 
@@ -313,6 +319,27 @@ test("lists tenant-scoped run receipt history for an authenticated dashboard ses
   assert.equal(unauthorized.statusCode, 401);
   assert.equal(authorized.statusCode, 200);
   assert.deepEqual(authorized.json().receipts.map((receipt: RunReceipt) => ({ id: receipt.id, outcome: receipt.outcome, pauseReason: receipt.pauseReason })), [{ id: receiptId, outcome: "paused", pauseReason: "slow-network" }]);
+});
+
+test("reports a duplicate local receipt without exposing database details", async (t) => {
+  const app = await workflowApp(undefined, new DuplicateReceiptStore());
+  t.after(async () => app.close());
+  const signedUp = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "duplicate-receipt@example.com", password: "correct-horse-battery-staple", tenantName: "Duplicate receipt" },
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/workflows/a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b/run-receipts/import",
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { sourceId: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "completed" },
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.json(), { error: "This receipt was already saved." });
+  assert.doesNotMatch(response.body, /unique|postgres|database/i);
 });
 
 test("sign-in is rate limited after five requests from one client", async (t) => {
