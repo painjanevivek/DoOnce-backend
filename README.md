@@ -23,7 +23,13 @@ npm run dev
 
 The API listens on `http://127.0.0.1:4000` by default. Set `DOONCE_ALLOWED_ORIGINS` to a comma-separated dashboard-origin allowlist for a different local setup.
 
-Set a real `DATABASE_URL` and a random `SESSION_SECRET` of at least 32 bytes, then run migrations:
+For the local development database, start the included PostgreSQL service. Its port is loopback-only and its credentials are development-only:
+
+```text
+docker compose up -d
+```
+
+Set `DATABASE_URL` (the example matches this service) and a random `SESSION_SECRET` of at least 32 bytes, then run migrations:
 
 ```text
 npm run db:migrate
