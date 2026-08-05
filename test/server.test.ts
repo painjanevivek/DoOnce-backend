@@ -50,6 +50,12 @@ class ServerWorkflowStore implements WorkflowStore {
   }
   public async listWorkflows(): Promise<[]> { return []; }
   public async findDraft(id: string): Promise<WorkflowDraft | undefined> { return this.drafts.find((draft) => draft.id === id); }
+  public async markPolicyPreviewed(id: string, _user: unknown, policyPreviewedAt: string): Promise<WorkflowDraft | undefined> {
+    const draft = await this.findDraft(id);
+    if (!draft) return undefined;
+    draft.policyPreviewedAt = policyPreviewedAt;
+    return draft;
+  }
   public async activate(draft: PublishedWorkflowVersion): Promise<void> {
     this.active.push(draft);
     this.events.push({ id: `${draft.id}-published`, workflowId: draft.id, version: draft.version, eventType: "workflow.published", createdAt: new Date().toISOString() });

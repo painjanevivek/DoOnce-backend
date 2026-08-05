@@ -31,6 +31,7 @@ export interface WorkflowStore {
   createDraft(draft: WorkflowDraft): Promise<void>;
   listWorkflows(user: AuthenticatedUser): Promise<WorkflowSummary[]>;
   findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined>;
+  markPolicyPreviewed(id: string, user: AuthenticatedUser, previewedAt: string): Promise<WorkflowDraft | undefined>;
   activate(draft: PublishedWorkflowVersion, user: AuthenticatedUser): Promise<void>;
   listAuditEvents(workflowId: string, user: AuthenticatedUser): Promise<WorkflowAuditEvent[]>;
 }
@@ -65,6 +66,7 @@ export class WorkflowService {
     requireWorkflowAuthor(user.role);
     const draft = await this.store.findDraft(workflowId, user);
     if (!draft) return undefined;
+    if (!draft.policyPreviewedAt) throw new WorkflowInputError("Run the policy preview before publishing this draft.");
     const published = publishWorkflowDraft(draft, new Date().toISOString());
     if (!published.ok) throw new WorkflowInputError(published.errors.join(" "));
     await this.store.activate(published.value, user);
@@ -74,9 +76,12 @@ export class WorkflowService {
   public async previewDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {
     const draft = await this.store.findDraft(workflowId, user);
     if (!draft) return undefined;
-    const preview = publishWorkflowDraft(draft, new Date().toISOString());
+    const previewedAt = new Date().toISOString();
+    const preview = publishWorkflowDraft(draft, previewedAt);
     if (!preview.ok) throw new WorkflowInputError(preview.errors.join(" "));
-    return { id: draft.id, title: draft.title, version: draft.version, status: "draft", allowedDomains: draft.allowedDomains, steps: draft.steps };
+    const markedDraft = await this.store.markPolicyPreviewed(workflowId, user, previewedAt);
+    if (!markedDraft) return undefined;
+    return { id: markedDraft.id, title: markedDraft.title, version: markedDraft.version, status: "draft", allowedDomains: markedDraft.allowedDomains, steps: markedDraft.steps };
   }
 
   public listAuditEvents(user: AuthenticatedUser, workflowId: string): Promise<WorkflowAuditEvent[]> {

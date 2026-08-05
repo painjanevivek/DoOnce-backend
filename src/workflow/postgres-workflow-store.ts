@@ -59,6 +59,23 @@ export class PostgresWorkflowStore implements WorkflowStore {
     }
   }
 
+  public async markPolicyPreviewed(id: string, user: AuthenticatedUser, previewedAt: string): Promise<WorkflowDraft | undefined> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const result = await transaction.query<{ definition: unknown }>(
+          "UPDATE workflow_versions SET definition = jsonb_set(definition, '{policyPreviewedAt}', to_jsonb($1::text), true) WHERE workflow_id = $2 AND status = 'draft' RETURNING definition",
+          [previewedAt, id],
+        );
+        const validation = validateWorkflowDraft(result.rows[0]?.definition);
+        if (!validation.ok || validation.value.tenantId !== user.tenantId) return undefined;
+        return validation.value;
+      });
+    } finally {
+      client.release();
+    }
+  }
+
   public async activate(draft: PublishedWorkflowVersion, user: AuthenticatedUser): Promise<void> {
     const client = await this.pool.connect();
     try {

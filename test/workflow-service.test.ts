@@ -19,6 +19,12 @@ class MemoryWorkflowStore implements WorkflowStore {
   public async findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined> {
     return this.drafts.find((draft) => draft.id === id && draft.tenantId === user.tenantId);
   }
+  public async markPolicyPreviewed(id: string, user: AuthenticatedUser, policyPreviewedAt: string): Promise<WorkflowDraft | undefined> {
+    const draft = await this.findDraft(id, user);
+    if (!draft) return undefined;
+    draft.policyPreviewedAt = policyPreviewedAt;
+    return draft;
+  }
   public async activate(draft: PublishedWorkflowVersion): Promise<void> {
     this.active.push(draft);
     this.events.push({ id: `${draft.id}-published`, workflowId: draft.id, version: draft.version, eventType: "workflow.published", createdAt: new Date().toISOString() });
@@ -51,6 +57,7 @@ test("publishes only a policy-safe draft", async () => {
   const store = new MemoryWorkflowStore();
   const service = new WorkflowService(store);
   const draft = await service.createDraft(owner, safeReportWorkflowFixture);
+  await service.previewDraft(owner, draft.id);
   const published = await service.publishDraft(owner, draft.id);
 
   assert.equal(published?.status, "active");
@@ -66,5 +73,11 @@ test("refuses to publish a draft with a reversible write", async () => {
     steps: [{ ...safeReportWorkflowFixture.steps[0], kind: "type" }],
   });
 
+  await assert.rejects(() => service.previewDraft(owner, draft.id), WorkflowInputError);
+});
+
+test("refuses publication until a policy preview passes", async () => {
+  const service = new WorkflowService(new MemoryWorkflowStore());
+  const draft = await service.createDraft(owner, safeReportWorkflowFixture);
   await assert.rejects(() => service.publishDraft(owner, draft.id), WorkflowInputError);
 });

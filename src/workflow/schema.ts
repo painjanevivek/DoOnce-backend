@@ -21,6 +21,7 @@ export interface WorkflowDraft {
   tenantId: string;
   ownerId: string;
   title: string;
+  policyPreviewedAt?: string;
   allowedDomains: string[];
   steps: WorkflowStep[];
 }
@@ -60,6 +61,7 @@ export function validateWorkflowDraft(input: unknown): WorkflowValidationResult 
   if (!isUuid(input.tenantId)) errors.push("Workflow tenantId must be a UUID.");
   if (!isUuid(input.ownerId)) errors.push("Workflow ownerId must be a UUID.");
   if (!isNonEmptyString(input.title, 120)) errors.push("Workflow title is required and must be at most 120 characters.");
+  if (input.policyPreviewedAt !== undefined && (typeof input.policyPreviewedAt !== "string" || Number.isNaN(Date.parse(input.policyPreviewedAt)))) errors.push("Workflow policy preview timestamp must be valid.");
 
   const allowedDomains = input.allowedDomains;
   if (!Array.isArray(allowedDomains) || allowedDomains.length === 0 || allowedDomains.some((domain) => !isValidDomain(domain))) {
