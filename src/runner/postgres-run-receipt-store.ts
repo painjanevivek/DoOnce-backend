@@ -45,7 +45,7 @@ export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
     try {
       return await withTenantTransaction(client, user, async (transaction) => {
         const result = await transaction.query<{ id: string; tenant_id: string; workflow_id: string; workflow_version: number; actor_id: string; outcome: RunReceipt["outcome"]; pause_reason: string | null; step_outcomes: RunReceipt["stepOutcomes"]; started_at: Date; finished_at: Date }>(
-          "SELECT id, tenant_id, workflow_id, workflow_version, actor_id, outcome, pause_reason, step_outcomes, started_at, finished_at FROM workflow_run_receipts WHERE workflow_id = $1 ORDER BY finished_at DESC",
+          "SELECT id, tenant_id, workflow_id, workflow_version, actor_id, outcome, pause_reason, step_outcomes, started_at, finished_at FROM workflow_run_receipts WHERE workflow_id = $1 ORDER BY finished_at DESC LIMIT 50",
           [workflowId],
         );
         return result.rows.map((row) => ({ id: row.id, tenantId: row.tenant_id, workflowId: row.workflow_id, workflowVersion: row.workflow_version, actorId: row.actor_id, outcome: row.outcome, ...(row.pause_reason ? { pauseReason: row.pause_reason } : {}), stepOutcomes: row.step_outcomes, startedAt: row.started_at.toISOString(), finishedAt: row.finished_at.toISOString() }));

@@ -54,3 +54,20 @@ test("maps a receipt uniqueness violation to a safe duplicate-import error", asy
   assert.ok(queries.includes("ROLLBACK"));
   assert.equal(released, true);
 });
+
+test("loads only the newest bounded receipt history", async () => {
+  const queries: string[] = [];
+  const store = new PostgresRunReceiptStore({
+    connect: async () => ({
+      query: async (sql: string) => {
+        queries.push(sql);
+        if (sql.startsWith("SELECT id, tenant_id")) return { rows: [] };
+        return { rows: [] };
+      },
+      release: () => undefined,
+    }),
+  } as unknown as Pool);
+
+  assert.deepEqual(await store.listLocalDemoReceipts("a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", user), []);
+  assert.ok(queries.some((sql) => sql.includes("ORDER BY finished_at DESC LIMIT 50")));
+});
