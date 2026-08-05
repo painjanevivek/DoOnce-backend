@@ -3,7 +3,7 @@ import type { AuthenticatedUser } from "../auth/auth-service.js";
 import { withTenantTransaction } from "../database/tenant-context.js";
 import { validateWorkflowDraft, type WorkflowDraft } from "./schema.js";
 import type { PublishedWorkflowVersion } from "./versioning.js";
-import type { WorkflowStore, WorkflowSummary } from "./workflow-service.js";
+import type { WorkflowAuditEvent, WorkflowStore, WorkflowSummary } from "./workflow-service.js";
 
 export class PostgresWorkflowStore implements WorkflowStore {
   public constructor(private readonly pool: Pool) {}
@@ -16,6 +16,10 @@ export class PostgresWorkflowStore implements WorkflowStore {
         await transaction.query(
           "INSERT INTO workflow_versions (workflow_id, version, tenant_id, status, definition, created_by) VALUES ($1, $2, $3, 'draft', $4::jsonb, $5)",
           [draft.id, draft.version, draft.tenantId, JSON.stringify(draft), draft.ownerId],
+        );
+        await transaction.query(
+          "INSERT INTO workflow_audit_events (tenant_id, workflow_id, workflow_version, actor_id, event_type, metadata) VALUES ($1, $2, $3, $4, 'workflow.draft_created', $5::jsonb)",
+          [draft.tenantId, draft.id, draft.version, draft.ownerId, JSON.stringify({ allowedDomainCount: draft.allowedDomains.length, stepCount: draft.steps.length })],
         );
       });
     } finally {
@@ -64,6 +68,25 @@ export class PostgresWorkflowStore implements WorkflowStore {
           [draft.publishedAt, JSON.stringify(draft), draft.id, draft.version],
         );
         await transaction.query("UPDATE workflows SET active_version = $1, updated_at = now() WHERE id = $2", [draft.version, draft.id]);
+        await transaction.query(
+          "INSERT INTO workflow_audit_events (tenant_id, workflow_id, workflow_version, actor_id, event_type, metadata) VALUES ($1, $2, $3, $4, 'workflow.published', '{}'::jsonb)",
+          [draft.tenantId, draft.id, draft.version, user.userId],
+        );
+      });
+    } finally {
+      client.release();
+    }
+  }
+
+  public async listAuditEvents(workflowId: string, user: AuthenticatedUser): Promise<WorkflowAuditEvent[]> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const result = await transaction.query<{ id: string; workflow_id: string; workflow_version: number; event_type: WorkflowAuditEvent["eventType"]; created_at: Date }>(
+          "SELECT id, workflow_id, workflow_version, event_type, created_at FROM workflow_audit_events WHERE workflow_id = $1 ORDER BY created_at ASC",
+          [workflowId],
+        );
+        return result.rows.map((row) => ({ id: row.id, workflowId: row.workflow_id, version: row.workflow_version, eventType: row.event_type, createdAt: row.created_at.toISOString() }));
       });
     } finally {
       client.release();

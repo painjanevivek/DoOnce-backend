@@ -5,7 +5,7 @@ import { AuthService, type AccountRecord, type AuthStore, type MembershipRole } 
 import type { SessionIdentity } from "../src/auth/session-token.js";
 import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
-import { WorkflowService, type WorkflowStore } from "../src/workflow/workflow-service.js";
+import { WorkflowService, type WorkflowAuditEvent, type WorkflowStore } from "../src/workflow/workflow-service.js";
 import type { OperationalControls } from "../src/system/operational-controls.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 
@@ -43,10 +43,18 @@ async function authenticatedApp() {
 class ServerWorkflowStore implements WorkflowStore {
   private readonly drafts: WorkflowDraft[] = [];
   private readonly active: PublishedWorkflowVersion[] = [];
-  public async createDraft(draft: WorkflowDraft): Promise<void> { this.drafts.push(draft); }
+  private readonly events: WorkflowAuditEvent[] = [];
+  public async createDraft(draft: WorkflowDraft): Promise<void> {
+    this.drafts.push(draft);
+    this.events.push({ id: `${draft.id}-draft`, workflowId: draft.id, version: draft.version, eventType: "workflow.draft_created", createdAt: new Date().toISOString() });
+  }
   public async listWorkflows(): Promise<[]> { return []; }
   public async findDraft(id: string): Promise<WorkflowDraft | undefined> { return this.drafts.find((draft) => draft.id === id); }
-  public async activate(draft: PublishedWorkflowVersion): Promise<void> { this.active.push(draft); }
+  public async activate(draft: PublishedWorkflowVersion): Promise<void> {
+    this.active.push(draft);
+    this.events.push({ id: `${draft.id}-published`, workflowId: draft.id, version: draft.version, eventType: "workflow.published", createdAt: new Date().toISOString() });
+  }
+  public async listAuditEvents(workflowId: string): Promise<WorkflowAuditEvent[]> { return this.events.filter((event) => event.workflowId === workflowId); }
 }
 
 async function workflowApp(operationalControls?: OperationalControls) {
@@ -211,6 +219,14 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
   });
   assert.equal(published.statusCode, 200);
   assert.equal(published.json().workflow.status, "active");
+
+  const audit = await app.inject({
+    method: "GET",
+    url: `/api/v1/workflows/${response.json().workflow.id}/audit-events`,
+    headers: { cookie: signedUp.headers["set-cookie"] ?? "" },
+  });
+  assert.equal(audit.statusCode, 200);
+  assert.deepEqual(audit.json().events.map((event: { eventType: string }) => event.eventType), ["workflow.draft_created", "workflow.published"]);
 });
 
 test("workflow mutations reject a request without an approved Origin", async (t) => {

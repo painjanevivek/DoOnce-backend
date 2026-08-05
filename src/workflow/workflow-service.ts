@@ -10,11 +10,20 @@ export interface WorkflowSummary {
   updatedAt: string;
 }
 
+export interface WorkflowAuditEvent {
+  id: string;
+  workflowId: string;
+  version: number;
+  eventType: "workflow.draft_created" | "workflow.published";
+  createdAt: string;
+}
+
 export interface WorkflowStore {
   createDraft(draft: WorkflowDraft): Promise<void>;
   listWorkflows(user: AuthenticatedUser): Promise<WorkflowSummary[]>;
   findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined>;
   activate(draft: PublishedWorkflowVersion, user: AuthenticatedUser): Promise<void>;
+  listAuditEvents(workflowId: string, user: AuthenticatedUser): Promise<WorkflowAuditEvent[]>;
 }
 
 export class WorkflowInputError extends Error {}
@@ -51,6 +60,10 @@ export class WorkflowService {
     if (!published.ok) throw new WorkflowInputError(published.errors.join(" "));
     await this.store.activate(published.value, user);
     return published.value;
+  }
+
+  public listAuditEvents(user: AuthenticatedUser, workflowId: string): Promise<WorkflowAuditEvent[]> {
+    return this.store.listAuditEvents(workflowId, user);
   }
 }
 

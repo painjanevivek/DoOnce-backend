@@ -3,19 +3,27 @@ import test from "node:test";
 import type { AuthenticatedUser } from "../src/auth/auth-service.js";
 import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
-import { WorkflowInputError, WorkflowService, type WorkflowStore } from "../src/workflow/workflow-service.js";
+import { WorkflowInputError, WorkflowService, type WorkflowAuditEvent, type WorkflowStore } from "../src/workflow/workflow-service.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 
 class MemoryWorkflowStore implements WorkflowStore {
   public drafts: WorkflowDraft[] = [];
   public active: PublishedWorkflowVersion[] = [];
+  public events: WorkflowAuditEvent[] = [];
 
-  public async createDraft(draft: WorkflowDraft): Promise<void> { this.drafts.push(draft); }
+  public async createDraft(draft: WorkflowDraft): Promise<void> {
+    this.drafts.push(draft);
+    this.events.push({ id: `${draft.id}-draft`, workflowId: draft.id, version: draft.version, eventType: "workflow.draft_created", createdAt: new Date().toISOString() });
+  }
   public async listWorkflows(): Promise<[]> { return []; }
   public async findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined> {
     return this.drafts.find((draft) => draft.id === id && draft.tenantId === user.tenantId);
   }
-  public async activate(draft: PublishedWorkflowVersion): Promise<void> { this.active.push(draft); }
+  public async activate(draft: PublishedWorkflowVersion): Promise<void> {
+    this.active.push(draft);
+    this.events.push({ id: `${draft.id}-published`, workflowId: draft.id, version: draft.version, eventType: "workflow.published", createdAt: new Date().toISOString() });
+  }
+  public async listAuditEvents(workflowId: string): Promise<WorkflowAuditEvent[]> { return this.events.filter((event) => event.workflowId === workflowId); }
 }
 
 const owner: AuthenticatedUser = {
@@ -47,6 +55,7 @@ test("publishes only a policy-safe draft", async () => {
 
   assert.equal(published?.status, "active");
   assert.equal(store.active.length, 1);
+  assert.deepEqual(await service.listAuditEvents(owner, draft.id).then((events) => events.map((event) => event.eventType)), ["workflow.draft_created", "workflow.published"]);
 });
 
 test("refuses to publish a draft with a reversible write", async () => {
