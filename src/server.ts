@@ -11,7 +11,7 @@ import {
   type SensitiveFieldKind,
 } from "./policy/action-policy.js";
 
-const defaultAllowedOrigins = ["http://localhost:3000"];
+const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
 function allowedOriginsFromEnvironment(): string[] {
   const configured = process.env.DOONCE_ALLOWED_ORIGINS;
@@ -61,6 +61,7 @@ export function buildServer(options: ServerOptions = {}) {
       }
       callback(new Error("Origin is not allowed."), false);
     },
+    credentials: true,
     methods: ["GET", "POST"],
     allowedHeaders: ["content-type"],
   });
@@ -112,6 +113,7 @@ export function buildServer(options: ServerOptions = {}) {
       },
     },
   }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
     const auth = options.authService;
     if (!auth) return reply.code(503).send({ error: "Authentication is not configured." });
     try {
@@ -138,6 +140,7 @@ export function buildServer(options: ServerOptions = {}) {
       },
     },
   }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
     const auth = options.authService;
     if (!auth) return reply.code(503).send({ error: "Authentication is not configured." });
     try {
@@ -152,6 +155,7 @@ export function buildServer(options: ServerOptions = {}) {
   });
 
   app.post("/api/v1/auth/sign-out", async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
     const auth = options.authService;
     if (!auth) return reply.code(503).send({ error: "Authentication is not configured." });
     await auth.signOut(request.cookies[sessionCookieName]);
@@ -182,4 +186,8 @@ function sessionCookieOptions() {
 
 function setSessionCookie(reply: { setCookie(name: string, value: string, options: ReturnType<typeof sessionCookieOptions>): unknown }, token: string): void {
   reply.setCookie(sessionCookieName, token, sessionCookieOptions());
+}
+
+function hasAllowedOrigin(origin: string | undefined, allowedOrigins: readonly string[]): boolean {
+  return typeof origin === "string" && allowedOrigins.includes(origin);
 }

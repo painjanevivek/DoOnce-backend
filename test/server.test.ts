@@ -80,6 +80,7 @@ test("auth sign-up sends an HttpOnly session cookie and exposes no password mate
   const response = await app.inject({
     method: "POST",
     url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
     payload: { email: "owner@example.com", password: "not-a-real-password", tenantName: "DoOnce demo" },
   });
 
@@ -95,6 +96,7 @@ test("auth me requires a valid session cookie", async (t) => {
   const signedUp = await app.inject({
     method: "POST",
     url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
     payload: { email: "owner@example.com", password: "not-a-real-password", tenantName: "DoOnce demo" },
   });
 
@@ -107,4 +109,36 @@ test("auth me requires a valid session cookie", async (t) => {
   assert.equal(unauthorized.statusCode, 401);
   assert.equal(authorized.statusCode, 200);
   assert.equal(authorized.json().user.email, "owner@example.com");
+});
+
+test("auth mutations reject a missing or unapproved Origin", async (t) => {
+  const app = authenticatedApp();
+  t.after(async () => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    payload: { email: "owner@example.com", password: "not-a-real-password", tenantName: "DoOnce demo" },
+  });
+
+  assert.equal(response.statusCode, 403);
+});
+
+test("auth CORS permits the configured browser origin to include credentials", async (t) => {
+  const app = authenticatedApp();
+  t.after(async () => app.close());
+
+  const response = await app.inject({
+    method: "OPTIONS",
+    url: "/api/v1/auth/sign-in",
+    headers: {
+      origin: "http://localhost:3000",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type",
+    },
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(response.headers["access-control-allow-origin"], "http://localhost:3000");
+  assert.equal(response.headers["access-control-allow-credentials"], "true");
 });
