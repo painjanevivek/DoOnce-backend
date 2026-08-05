@@ -5,6 +5,7 @@ import { PostgresWorkflowStore } from "./workflow/postgres-workflow-store.js";
 import { WorkflowService } from "./workflow/workflow-service.js";
 import { PostgresRunReceiptStore } from "./runner/postgres-run-receipt-store.js";
 import { PostgresSupportReportStore } from "./support/postgres-support-report-store.js";
+import { assertRuntimeDatabaseRole } from "./database/runtime-role.js";
 import { Pool } from "pg";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
@@ -19,6 +20,7 @@ const sessionSecret = process.env.SESSION_SECRET;
 if (databaseUrl && !sessionSecret) throw new Error("SESSION_SECRET is required when DATABASE_URL is configured.");
 
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefined;
+if (pool) await assertRuntimeDatabaseRole(pool);
 const runReceiptStore = pool && sessionSecret ? new PostgresRunReceiptStore(pool) : undefined;
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),

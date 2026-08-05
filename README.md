@@ -29,13 +29,15 @@ For the local development database, start the included PostgreSQL service. Its p
 docker compose up -d
 ```
 
-Set `DATABASE_URL` (the example matches this service) and a random `SESSION_SECRET` of at least 32 bytes, then run migrations:
+Set `DATABASE_URL` to the non-superuser application role, `MIGRATIONS_DATABASE_URL` to the schema-owner role, and a random `SESSION_SECRET` of at least 32 bytes, then run migrations:
 
 ```text
 npm run db:migrate
 ```
 
 Every tenant-owned table is protected by PostgreSQL row-level security. The server derives tenant/user context from a signed session token and sets `app.tenant_id` plus `app.user_id` inside the same transaction. It does not trust tenant IDs supplied by browser requests.
+
+The API refuses to start if its `DATABASE_URL` role is a superuser or has `BYPASSRLS`; either can defeat PostgreSQL tenant isolation. The local Compose setup creates the development-only `doonce_app` runtime role for a fresh volume. Provision an equivalent restricted role and grants before deployment; do not point the API at the migration/schema-owner account.
 
 Workflow domains must be fully qualified public domains, except for the explicit local demo hosts `localhost` and `127.0.0.1`. Other bare internal hostnames remain rejected.
 
