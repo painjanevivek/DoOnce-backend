@@ -299,6 +299,21 @@ test("imports a local receipt only through an authenticated same-origin dashboar
   assert.equal(rejected.statusCode, 403);
 });
 
+test("rejects unstructured pause text from a local receipt import", async (t) => {
+  const receipts = new ServerRunReceiptStore();
+  const app = await workflowApp(undefined, receipts);
+  t.after(async () => app.close());
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "receipt-code@example.com", password: "correct-horse-battery-staple", tenantName: "Receipt code" } });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/workflows/a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b/run-receipts/import",
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { sourceId: "f0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "paused", pauseReason: "The page looked unusual." },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(receipts.imports.length, 0);
+});
+
 test("allows runners but denies reviewers from saving a run receipt", async (t) => {
   const runnerReceipts = new ServerRunReceiptStore();
   const reviewerReceipts = new ServerRunReceiptStore();

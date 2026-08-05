@@ -60,6 +60,7 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 
 Receipt imports are immutable. Re-saving the same local receipt returns a safe conflict response rather than creating a duplicate or exposing a database error.
 Owners, builders, and runners may save verified receipts; reviewers remain read-only.
+Imported local pause receipts accept only `changed-page`, `slow-network`, or `unknown` as their redacted reason code.
 
 Draft creation, policy-preview completion, and publication each write an immutable audit event containing IDs, version, actor and timestamp. Metadata is limited to aggregate counts; it never includes browser content, action values, credentials or OTPs.
 

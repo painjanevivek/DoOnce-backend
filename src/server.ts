@@ -260,7 +260,7 @@ export async function buildServer(options: ServerOptions = {}) {
         properties: {
           sourceId: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" },
           outcome: { type: "string", enum: ["completed", "paused"] },
-          pauseReason: { type: "string", minLength: 1, maxLength: 160 },
+          pauseReason: { type: "string", enum: ["changed-page", "slow-network", "unknown"] },
         },
       },
     },
