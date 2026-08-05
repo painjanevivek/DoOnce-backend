@@ -75,6 +75,8 @@ All state-changing authentication and workflow routes require a configured brows
 
 Reports deliberately contain only the selected category and server-derived tenant, reporter, ID, and timestamp. They never accept attachments, page content, selectors, action values, passwords, OTPs, or free-form diagnostic text.
 
+With explicit user consent, a report may store a server-derived aggregate for one tenant-scoped workflow version: bounded receipt counts, success rate, and stable pause-reason totals. The browser never uploads diagnostic content, receipt IDs, selectors, values, screenshots, or page content.
+
 Unexpected API failures return a generic client-safe error. Structured server logs retain the error type, code, status and stack locations without recording error messages that could contain sensitive values.
 
 ## Controlled-run foundation

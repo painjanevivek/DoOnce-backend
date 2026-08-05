@@ -9,7 +9,7 @@ import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
 import { WorkflowService, type WorkflowAuditEvent, type WorkflowStore } from "../src/workflow/workflow-service.js";
 import type { OperationalControls } from "../src/system/operational-controls.js";
-import type { SubmittedSupportReport, SupportReportCategory, SupportReportStore } from "../src/support/postgres-support-report-store.js";
+import type { SubmittedSupportReport, SupportDiagnostic, SupportReportCategory, SupportReportStore } from "../src/support/postgres-support-report-store.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 
 const workflowCreatePayload = {
@@ -142,10 +142,12 @@ class HealthReceiptStore extends ServerRunReceiptStore {
 
 class ServerSupportReportStore implements SupportReportStore {
   public readonly reports: Array<{ category: SupportReportCategory; user: AuthenticatedUser }> = [];
+  public readonly diagnostics: SupportDiagnostic[] = [];
 
-  public async submit(category: SupportReportCategory, user: AuthenticatedUser): Promise<SubmittedSupportReport> {
+  public async submit(category: SupportReportCategory, user: AuthenticatedUser, diagnostic?: SupportDiagnostic): Promise<SubmittedSupportReport> {
     this.reports.push({ category, user });
-    return { id: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", category, createdAt: "2026-08-05T00:00:00.000Z" };
+    if (diagnostic) this.diagnostics.push(diagnostic);
+    return { id: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", category, createdAt: "2026-08-05T00:00:00.000Z", diagnosticIncluded: diagnostic !== undefined };
   }
 }
 
@@ -333,6 +335,21 @@ test("stores a tenant-bound categorized support report without browser content",
   });
   assert.equal(invalid.statusCode, 400);
   assert.equal(reports.reports.length, 1);
+});
+
+test("derives an opted-in support diagnostic from tenant-scoped receipt aggregates", async (t) => {
+  const reports = new ServerSupportReportStore();
+  const receipts = new ServerRunReceiptStore();
+  const app = await buildServer({ authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"), supportReportStore: reports, runReceiptStore: receipts });
+  t.after(async () => app.close());
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "diagnostic@example.com", password: "correct-horse-battery-staple", tenantName: "Diagnostics" } });
+  const workflowId = "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
+  const response = await app.inject({ method: "POST", url: "/api/v1/support-reports", headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" }, payload: { category: "workflow-paused", includeRunHealth: true, workflowId, workflowVersion: 1 } });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.json().report.diagnosticIncluded, true);
+  assert.deepEqual(reports.diagnostics, [{ workflowId, workflowVersion: 1, sampleSize: 0, completedRuns: 0, pausedRuns: 0, successRate: 0, pauseReasons: {} }]);
+  assert.doesNotMatch(response.body, /workflowId|sampleSize|pauseReasons/i);
 });
 
 test("imports a local receipt only through an authenticated same-origin dashboard request", async (t) => {

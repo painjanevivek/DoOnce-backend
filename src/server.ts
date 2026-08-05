@@ -9,7 +9,7 @@ import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDem
 import { summarizeRunHealth } from "./runner/run-health.js";
 import type { RunReceipt } from "./runner/run-receipt.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
-import { supportReportCategories, type SupportReportCategory, type SupportReportStore } from "./support/postgres-support-report-store.js";
+import { supportReportCategories, type SupportDiagnostic, type SupportReportCategory, type SupportReportStore } from "./support/postgres-support-report-store.js";
 import {
   evaluateActionPolicy,
   isActionKind,
@@ -202,13 +202,13 @@ export async function buildServer(options: ServerOptions = {}) {
     return { user };
   });
 
-  app.post<{ Body: { category?: unknown } }>("/api/v1/support-reports", {
+  app.post<{ Body: { category?: unknown; includeRunHealth?: unknown; workflowId?: unknown; workflowVersion?: unknown } }>("/api/v1/support-reports", {
     schema: {
       body: {
         type: "object",
         required: ["category"],
         additionalProperties: false,
-        properties: { category: { type: "string", enum: [...supportReportCategories] } },
+        properties: { category: { type: "string", enum: [...supportReportCategories] }, includeRunHealth: { type: "boolean" }, workflowId: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" }, workflowVersion: { type: "integer", minimum: 1, maximum: 1000000000 } },
       },
     },
   }, async (request, reply) => {
@@ -220,7 +220,16 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     const category = request.body.category;
     if (typeof category !== "string" || !supportReportCategories.includes(category as SupportReportCategory)) return reply.code(400).send({ error: "Invalid support report category." });
-    const report = await supportReports.submit(category as SupportReportCategory, user);
+    const wantsRunHealth = request.body.includeRunHealth === true;
+    if (wantsRunHealth !== (typeof request.body.workflowId === "string" && typeof request.body.workflowVersion === "number")) return reply.code(400).send({ error: "Invalid diagnostic selection." });
+    let diagnostic: SupportDiagnostic | undefined;
+    if (wantsRunHealth) {
+      const runReceipts = options.runReceiptStore;
+      if (!runReceipts) return reply.code(503).send({ error: "Run diagnostics are not configured." });
+      const health = summarizeRunHealth(await runReceipts.listLocalDemoReceipts(request.body.workflowId as string, user), request.body.workflowVersion as number);
+      diagnostic = { workflowId: request.body.workflowId as string, workflowVersion: health.workflowVersion, sampleSize: health.sampleSize, completedRuns: health.completedRuns, pausedRuns: health.pausedRuns, successRate: health.successRate, pauseReasons: health.pauseReasons };
+    }
+    const report = await supportReports.submit(category as SupportReportCategory, user, diagnostic);
     return reply.code(201).send({ report });
   });
 
