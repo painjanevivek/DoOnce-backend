@@ -291,6 +291,8 @@ test("imports a local receipt only through an authenticated same-origin dashboar
 
   assert.equal(accepted.statusCode, 201);
   assert.equal(accepted.json().receipt.id, receiptId);
+  assert.equal("tenantId" in accepted.json().receipt, false);
+  assert.equal("actorId" in accepted.json().receipt, false);
   assert.equal(receipts.imports.length, 1);
   assert.equal(rejected.statusCode, 403);
 });
@@ -319,6 +321,8 @@ test("lists tenant-scoped run receipt history for an authenticated dashboard ses
   assert.equal(unauthorized.statusCode, 401);
   assert.equal(authorized.statusCode, 200);
   assert.deepEqual(authorized.json().receipts.map((receipt: RunReceipt) => ({ id: receipt.id, outcome: receipt.outcome, pauseReason: receipt.pauseReason })), [{ id: receiptId, outcome: "paused", pauseReason: "slow-network" }]);
+  assert.equal("tenantId" in authorized.json().receipts[0], false);
+  assert.equal("actorId" in authorized.json().receipts[0], false);
 });
 
 test("reports a duplicate local receipt without exposing database details", async (t) => {

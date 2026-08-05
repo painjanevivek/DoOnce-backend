@@ -6,6 +6,7 @@ import Fastify, { type FastifyError } from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
 import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
+import type { RunReceipt } from "./runner/run-receipt.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
 import {
   evaluateActionPolicy,
@@ -246,7 +247,7 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!auth || !runReceipts) return reply.code(503).send({ error: "Run receipt history is not configured." });
     const user = await auth.currentUser(request.cookies[sessionCookieName]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
-    return { receipts: await runReceipts.listLocalDemoReceipts(request.params.id, user) };
+    return { receipts: (await runReceipts.listLocalDemoReceipts(request.params.id, user)).map(redactRunReceipt) };
   });
 
   app.post<{ Params: { id: string }; Body: { sourceId?: unknown; outcome?: unknown; pauseReason?: unknown } }>("/api/v1/workflows/:id/run-receipts/import", {
@@ -275,7 +276,7 @@ export async function buildServer(options: ServerOptions = {}) {
     try {
       const receipt = await runReceipts.importLocalDemoReceipt(request.params.id, { sourceId, outcome, ...(typeof pauseReason === "string" ? { pauseReason } : {}) } satisfies LocalDemoReceiptImport, user);
       if (!receipt) return reply.code(404).send({ error: "Workflow not found." });
-      return reply.code(201).send({ receipt });
+      return reply.code(201).send({ receipt: redactRunReceipt(receipt) });
     } catch (error) {
       if (error instanceof ReceiptAlreadyImportedError) return reply.code(409).send({ error: "This receipt was already saved." });
       throw error;
@@ -396,4 +397,16 @@ function setSessionCookie(reply: { setCookie(name: string, value: string, option
 
 function hasAllowedOrigin(origin: string | undefined, allowedOrigins: readonly string[]): boolean {
   return typeof origin === "string" && allowedOrigins.includes(origin);
+}
+
+function redactRunReceipt(receipt: RunReceipt) {
+  return {
+    id: receipt.id,
+    workflowVersion: receipt.workflowVersion,
+    outcome: receipt.outcome,
+    ...(receipt.pauseReason ? { pauseReason: receipt.pauseReason } : {}),
+    stepOutcomes: receipt.stepOutcomes,
+    startedAt: receipt.startedAt,
+    finishedAt: receipt.finishedAt,
+  };
 }
