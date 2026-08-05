@@ -56,6 +56,7 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 - `POST /api/v1/workflows/:id/publish` permits only owner/builder roles and only when every step is currently policy-allowlisted. Reversible writes, approvals, submissions and unknown actions cannot be published.
 - `GET /api/v1/workflows/:id/audit-events` returns the tenant-scoped, append-only workflow lifecycle events.
 - `POST /api/v1/workflows/:id/run-receipts/import` accepts a user-confirmed local receipt only from an authenticated dashboard request with an approved Origin. The server derives the tenant, actor, active version, step IDs, and receipt timestamps; it accepts only the explicit local report-demo workflow shape.
+- `GET /api/v1/workflows/:id/run-receipts` returns the authenticated tenant's redacted receipt history for that workflow. It never returns browser page content or action values.
 
 Draft creation, policy-preview completion, and publication each write an immutable audit event containing IDs, version, actor and timestamp. Metadata is limited to aggregate counts; it never includes browser content, action values, credentials or OTPs.
 

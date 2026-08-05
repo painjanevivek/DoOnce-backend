@@ -238,6 +238,17 @@ export async function buildServer(options: ServerOptions = {}) {
     return { workflow };
   });
 
+  app.get<{ Params: { id: string } }>("/api/v1/workflows/:id/run-receipts", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    const auth = options.authService;
+    const runReceipts = options.runReceiptStore;
+    if (!auth || !runReceipts) return reply.code(503).send({ error: "Run receipt history is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return { receipts: await runReceipts.listLocalDemoReceipts(request.params.id, user) };
+  });
+
   app.post<{ Params: { id: string }; Body: { sourceId?: unknown; outcome?: unknown; pauseReason?: unknown } }>("/api/v1/workflows/:id/run-receipts/import", {
     schema: {
       params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } },

@@ -73,6 +73,23 @@ class FailingWorkflowStore extends ServerWorkflowStore {
 class ServerRunReceiptStore implements LocalDemoReceiptStore {
   public readonly imports: Array<{ workflowId: string; input: LocalDemoReceiptImport; user: AuthenticatedUser }> = [];
 
+  public async listLocalDemoReceipts(workflowId: string, user: AuthenticatedUser): Promise<RunReceipt[]> {
+    return this.imports
+      .filter((item) => item.workflowId === workflowId && item.user.tenantId === user.tenantId)
+      .map((item) => ({
+        id: item.input.sourceId,
+        tenantId: item.user.tenantId,
+        workflowId: item.workflowId,
+        workflowVersion: 1,
+        actorId: item.user.userId,
+        outcome: item.input.outcome,
+        ...(item.input.pauseReason ? { pauseReason: item.input.pauseReason } : {}),
+        stepOutcomes: [{ stepId: safeReportWorkflowFixture.steps[0].id, outcome: item.input.outcome === "completed" ? "verified" : "paused" }],
+        startedAt: "2026-08-05T00:00:00.000Z",
+        finishedAt: "2026-08-05T00:00:00.000Z",
+      }));
+  }
+
   public async importLocalDemoReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt> {
     this.imports.push({ workflowId, input, user });
     return {
@@ -270,6 +287,32 @@ test("imports a local receipt only through an authenticated same-origin dashboar
   assert.equal(accepted.json().receipt.id, receiptId);
   assert.equal(receipts.imports.length, 1);
   assert.equal(rejected.statusCode, 403);
+});
+
+test("lists tenant-scoped run receipt history for an authenticated dashboard session", async (t) => {
+  const receipts = new ServerRunReceiptStore();
+  const app = await workflowApp(undefined, receipts);
+  t.after(async () => app.close());
+  const signedUp = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "receipt-history@example.com", password: "correct-horse-battery-staple", tenantName: "Receipt history" },
+  });
+  const workflowId = "b0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
+  const receiptId = "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
+  await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${workflowId}/run-receipts/import`,
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { sourceId: receiptId, outcome: "paused", pauseReason: "slow-network" },
+  });
+  const unauthorized = await app.inject({ method: "GET", url: `/api/v1/workflows/${workflowId}/run-receipts` });
+  const authorized = await app.inject({ method: "GET", url: `/api/v1/workflows/${workflowId}/run-receipts`, headers: { cookie: signedUp.headers["set-cookie"] ?? "" } });
+
+  assert.equal(unauthorized.statusCode, 401);
+  assert.equal(authorized.statusCode, 200);
+  assert.deepEqual(authorized.json().receipts.map((receipt: RunReceipt) => ({ id: receipt.id, outcome: receipt.outcome, pauseReason: receipt.pauseReason })), [{ id: receiptId, outcome: "paused", pauseReason: "slow-network" }]);
 });
 
 test("sign-in is rate limited after five requests from one client", async (t) => {

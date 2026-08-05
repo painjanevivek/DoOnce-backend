@@ -12,6 +12,7 @@ export interface LocalDemoReceiptImport {
 
 export interface LocalDemoReceiptStore {
   importLocalDemoReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt | undefined>;
+  listLocalDemoReceipts(workflowId: string, user: AuthenticatedUser): Promise<RunReceipt[]>;
 }
 
 export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
@@ -45,6 +46,10 @@ export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
     } finally {
       client.release();
     }
+  }
+
+  public async listLocalDemoReceipts(workflowId: string, user: AuthenticatedUser): Promise<RunReceipt[]> {
+    return this.list(workflowId, user);
   }
 
   public async importLocalDemoReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt | undefined> {
