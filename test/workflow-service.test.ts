@@ -121,6 +121,31 @@ test("refuses publication until a policy preview and completed test pass", async
   assert.equal((await service.publishDraft(owner, draft.id))?.status, "active");
 });
 
+test("returns only derived publication prerequisites when reviewing a saved draft", async () => {
+  const store = new MemoryWorkflowStore();
+  const evidence = new MemoryTestEvidenceStore();
+  const service = new WorkflowService(store, evidence);
+  const draft = await service.createDraft(owner, safeReportWorkflowFixture);
+
+  assert.deepEqual(await service.reviewDraft(owner, draft.id), {
+    id: draft.id,
+    title: draft.title,
+    version: draft.version,
+    status: "draft",
+    allowedDomains: draft.allowedDomains,
+    steps: draft.steps,
+    policyPreviewed: false,
+    testRunVerified: false,
+  });
+
+  await service.previewDraft(owner, draft.id);
+  evidence.confirm(draft.id, draft.version);
+  const reviewed = await service.reviewDraft(owner, draft.id);
+  assert.equal(reviewed?.policyPreviewed, true);
+  assert.equal(reviewed?.testRunVerified, true);
+  assert.equal("policyPreviewedAt" in (reviewed ?? {}), false);
+});
+
 test("lets only an owner disable an active workflow and records the event", async () => {
   const store = new MemoryWorkflowStore();
   const evidence = new MemoryTestEvidenceStore();

@@ -31,10 +31,10 @@ export class PostgresWorkflowStore implements WorkflowStore {
     const client = await this.pool.connect();
     try {
       return await withTenantTransaction(client, user, async (transaction) => {
-        const result = await transaction.query<{ id: string; title: string; active_version: number | null; updated_at: Date }>(
-          "SELECT id, title, active_version, updated_at FROM workflows ORDER BY updated_at DESC",
+        const result = await transaction.query<{ id: string; title: string; active_version: number | null; draft_version: number | null; updated_at: Date }>(
+          "SELECT workflows.id, workflows.title, workflows.active_version, workflows.updated_at, draft.version AS draft_version FROM workflows LEFT JOIN LATERAL (SELECT version FROM workflow_versions WHERE workflow_id = workflows.id AND status = 'draft' ORDER BY version DESC LIMIT 1) AS draft ON true ORDER BY workflows.updated_at DESC",
         );
-        return result.rows.map((row) => ({ id: row.id, title: row.title, activeVersion: row.active_version, updatedAt: row.updated_at.toISOString() }));
+        return result.rows.map((row) => ({ id: row.id, title: row.title, activeVersion: row.active_version, draftVersion: row.draft_version, updatedAt: row.updated_at.toISOString() }));
       });
     } finally {
       client.release();

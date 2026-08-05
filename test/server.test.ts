@@ -560,10 +560,12 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
   });
   assert.equal(review.statusCode, 200);
   assert.equal(review.json().workflow.steps[0].kind, "download");
+  assert.equal(review.json().workflow.policyPreviewed, false);
 
   const preview = await app.inject({ method: "POST", url: `/api/v1/workflows/${response.json().workflow.id}/preview`, headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" } });
   assert.equal(preview.statusCode, 200);
   assert.equal(preview.json().preview, "policy-passed");
+  assert.equal(preview.json().workflow.policyPreviewed, true);
 
   const publicationWithoutTest = await app.inject({
     method: "POST",

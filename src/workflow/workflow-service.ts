@@ -7,6 +7,7 @@ export interface WorkflowSummary {
   id: string;
   title: string;
   activeVersion: number | null;
+  draftVersion: number | null;
   updatedAt: string;
 }
 
@@ -25,6 +26,7 @@ export interface WorkflowReview {
   status: "draft" | "active";
   allowedDomains: string[];
   steps: WorkflowDraft["steps"];
+  policyPreviewed: boolean;
   testRunVerified: boolean;
 }
 
@@ -124,6 +126,7 @@ export class WorkflowService {
       status: "draft",
       allowedDomains: draft.allowedDomains,
       steps: draft.steps,
+      policyPreviewed: draft.policyPreviewedAt !== undefined,
       testRunVerified: this.testEvidence ? await this.testEvidence.hasVerifiedTestRun(draft.id, draft.version, user) : false,
     };
   }

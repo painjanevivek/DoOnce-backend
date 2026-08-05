@@ -51,7 +51,8 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 
 ### Workflow endpoints
 
-- `GET /api/v1/workflows` lists workflows only within the authenticated tenant.
+- `GET /api/v1/workflows` lists workflows only within the authenticated tenant, including a nullable draft version so the dashboard can offer an explicit resume action without returning draft contents.
+- `GET /api/v1/workflows/:id` returns the current tenant-scoped draft review with derived `policyPreviewed` and `testRunVerified` booleans. It does not return policy timestamps, receipt IDs, browser content, or action values.
 - `POST /api/v1/workflows` creates a draft. The server assigns its ID, tenant and owner; browser input cannot choose them.
 - `POST /api/v1/workflows/:id/publish` permits only owner/builder roles after both a server policy preview and one completed, tenant-scoped local test receipt exist for the exact draft version. Reversible writes, approvals, submissions and unknown actions cannot be published.
 - `POST /api/v1/workflows/:id/test-receipts/import` accepts only a completed local report-demo receipt for the current draft. It derives the tenant, draft version, actor, step IDs, and timestamps server-side; paused receipts cannot unlock publication.
