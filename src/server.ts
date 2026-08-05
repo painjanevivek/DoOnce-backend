@@ -5,6 +5,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyError } from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
+import type { LocalDemoReceiptImport, LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
 import {
   evaluateActionPolicy,
@@ -25,6 +26,7 @@ function allowedOriginsFromEnvironment(): string[] {
 export interface ServerOptions {
   authService?: AuthService;
   workflowService?: WorkflowService;
+  runReceiptStore?: LocalDemoReceiptStore;
   operationalControls?: OperationalControls;
 }
 
@@ -234,6 +236,34 @@ export async function buildServer(options: ServerOptions = {}) {
     const workflow = await workflows.reviewDraft(user, request.params.id);
     if (!workflow) return reply.code(404).send({ error: "Workflow not found." });
     return { workflow };
+  });
+
+  app.post<{ Params: { id: string }; Body: { sourceId?: unknown; outcome?: unknown; pauseReason?: unknown } }>("/api/v1/workflows/:id/run-receipts/import", {
+    schema: {
+      params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } },
+      body: {
+        type: "object",
+        required: ["sourceId", "outcome"],
+        additionalProperties: false,
+        properties: {
+          sourceId: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" },
+          outcome: { type: "string", enum: ["completed", "paused"] },
+          pauseReason: { type: "string", minLength: 1, maxLength: 160 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const runReceipts = options.runReceiptStore;
+    if (!auth || !runReceipts) return reply.code(503).send({ error: "Run receipt import is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    const { sourceId, outcome, pauseReason } = request.body;
+    if (typeof sourceId !== "string" || (outcome !== "completed" && outcome !== "paused") || ((outcome === "paused") !== (typeof pauseReason === "string"))) return reply.code(400).send({ error: "Invalid run receipt import." });
+    const receipt = await runReceipts.importLocalDemoReceipt(request.params.id, { sourceId, outcome, ...(typeof pauseReason === "string" ? { pauseReason } : {}) } satisfies LocalDemoReceiptImport, user);
+    if (!receipt) return reply.code(404).send({ error: "Workflow not found." });
+    return reply.code(201).send({ receipt });
   });
 
   app.post<{ Body: unknown }>("/api/v1/workflows", {

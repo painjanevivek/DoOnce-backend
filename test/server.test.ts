@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildServer } from "../src/server.js";
-import { AuthService, type AccountRecord, type AuthStore, type MembershipRole } from "../src/auth/auth-service.js";
+import { AuthService, type AccountRecord, type AuthenticatedUser, type AuthStore, type MembershipRole } from "../src/auth/auth-service.js";
+import type { LocalDemoReceiptImport, LocalDemoReceiptStore } from "../src/runner/postgres-run-receipt-store.js";
+import type { RunReceipt } from "../src/runner/run-receipt.js";
 import type { SessionIdentity } from "../src/auth/session-token.js";
 import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
@@ -68,11 +70,32 @@ class FailingWorkflowStore extends ServerWorkflowStore {
   public override async listWorkflows(): Promise<[]> { throw new Error("database password=not-for-clients"); }
 }
 
-async function workflowApp(operationalControls?: OperationalControls) {
+class ServerRunReceiptStore implements LocalDemoReceiptStore {
+  public readonly imports: Array<{ workflowId: string; input: LocalDemoReceiptImport; user: AuthenticatedUser }> = [];
+
+  public async importLocalDemoReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt> {
+    this.imports.push({ workflowId, input, user });
+    return {
+      id: input.sourceId,
+      tenantId: user.tenantId,
+      workflowId,
+      workflowVersion: 1,
+      actorId: user.userId,
+      outcome: input.outcome,
+      ...(input.pauseReason ? { pauseReason: input.pauseReason } : {}),
+      stepOutcomes: [{ stepId: safeReportWorkflowFixture.steps[0].id, outcome: input.outcome === "completed" ? "verified" : "paused" }],
+      startedAt: "2026-08-05T00:00:00.000Z",
+      finishedAt: "2026-08-05T00:00:00.000Z",
+    };
+  }
+}
+
+async function workflowApp(operationalControls?: OperationalControls, runReceiptStore?: LocalDemoReceiptStore) {
   return buildServer({
     authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
     workflowService: new WorkflowService(new ServerWorkflowStore()),
     ...(operationalControls ? { operationalControls } : {}),
+    ...(runReceiptStore ? { runReceiptStore } : {}),
   });
 }
 
@@ -216,6 +239,37 @@ test("auth CORS permits the configured browser origin to include credentials", a
   assert.equal(response.statusCode, 204);
   assert.equal(response.headers["access-control-allow-origin"], "http://localhost:3000");
   assert.equal(response.headers["access-control-allow-credentials"], "true");
+});
+
+test("imports a local receipt only through an authenticated same-origin dashboard request", async (t) => {
+  const receipts = new ServerRunReceiptStore();
+  const app = await workflowApp(undefined, receipts);
+  t.after(async () => app.close());
+  const signedUp = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "receipt-owner@example.com", password: "correct-horse-battery-staple", tenantName: "Receipt workspace" },
+  });
+  const receiptId = "f0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
+  const workflowId = "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
+  const accepted = await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${workflowId}/run-receipts/import`,
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { sourceId: receiptId, outcome: "completed" },
+  });
+  const rejected = await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${workflowId}/run-receipts/import`,
+    headers: { cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { sourceId: receiptId, outcome: "completed" },
+  });
+
+  assert.equal(accepted.statusCode, 201);
+  assert.equal(accepted.json().receipt.id, receiptId);
+  assert.equal(receipts.imports.length, 1);
+  assert.equal(rejected.statusCode, 403);
 });
 
 test("sign-in is rate limited after five requests from one client", async (t) => {
