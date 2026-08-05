@@ -54,6 +54,7 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 - `GET /api/v1/workflows` lists workflows only within the authenticated tenant.
 - `POST /api/v1/workflows` creates a draft. The server assigns its ID, tenant and owner; browser input cannot choose them.
 - `POST /api/v1/workflows/:id/publish` permits only owner/builder roles and only when every step is currently policy-allowlisted. Reversible writes, approvals, submissions and unknown actions cannot be published.
+- `POST /api/v1/workflows/:id/disable` permits only an owner to immediately archive the active version. It remains available during the global workflow-change freeze and writes an immutable lifecycle event.
 - `GET /api/v1/workflows/:id/audit-events` returns the tenant-scoped, append-only workflow lifecycle events.
 - `POST /api/v1/workflows/:id/run-receipts/import` accepts a user-confirmed local receipt only from an authenticated dashboard request with an approved Origin. The server derives the tenant, actor, active version, step IDs, and receipt timestamps; it accepts only the explicit local report-demo workflow shape.
 - `GET /api/v1/workflows/:id/run-receipts` returns the newest 50 redacted receipts for that workflow within the authenticated tenant. It never returns browser page content, action values, tenant IDs, or actor IDs.
@@ -62,7 +63,7 @@ Receipt imports are immutable. Re-saving the same local receipt returns a safe c
 Owners, builders, and runners may save verified receipts; reviewers remain read-only.
 Imported local pause receipts accept only `changed-page`, `slow-network`, or `unknown` as their redacted reason code.
 
-Draft creation, policy-preview completion, and publication each write an immutable audit event containing IDs, version, actor and timestamp. Metadata is limited to aggregate counts; it never includes browser content, action values, credentials or OTPs.
+Draft creation, policy-preview completion, publication, and disabling each write an immutable audit event containing IDs, version, actor and timestamp. Metadata is limited to aggregate counts; it never includes browser content, action values, credentials or OTPs.
 
 All state-changing authentication and workflow routes require a configured browser `Origin`; credentialed CORS is enabled only for the explicit `DOONCE_ALLOWED_ORIGINS` allowlist.
 

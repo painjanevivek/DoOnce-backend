@@ -65,6 +65,12 @@ class ServerWorkflowStore implements WorkflowStore {
     this.active.push(draft);
     this.events.push({ id: `${draft.id}-published`, workflowId: draft.id, version: draft.version, eventType: "workflow.published", createdAt: new Date().toISOString() });
   }
+  public async disableActive(id: string): Promise<number | undefined> {
+    const active = this.active.find((workflow) => workflow.id === id);
+    if (!active) return undefined;
+    this.events.push({ id: `${id}-disabled`, workflowId: id, version: active.version, eventType: "workflow.disabled", createdAt: new Date().toISOString() });
+    return active.version;
+  }
   public async listAuditEvents(workflowId: string): Promise<WorkflowAuditEvent[]> { return this.events.filter((event) => event.workflowId === workflowId); }
 }
 
@@ -440,6 +446,21 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
   });
   assert.equal(audit.statusCode, 200);
   assert.deepEqual(audit.json().events.map((event: { eventType: string }) => event.eventType), ["workflow.draft_created", "workflow.policy_previewed", "workflow.published"]);
+
+  const disabled = await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${response.json().workflow.id}/disable`,
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+  });
+  assert.equal(disabled.statusCode, 200);
+  assert.equal(disabled.json().disabledVersion, 1);
+
+  const disabledAudit = await app.inject({
+    method: "GET",
+    url: `/api/v1/workflows/${response.json().workflow.id}/audit-events`,
+    headers: { cookie: signedUp.headers["set-cookie"] ?? "" },
+  });
+  assert.deepEqual(disabledAudit.json().events.map((event: { eventType: string }) => event.eventType), ["workflow.draft_created", "workflow.policy_previewed", "workflow.published", "workflow.disabled"]);
 });
 
 test("workflow mutations reject a request without an approved Origin", async (t) => {

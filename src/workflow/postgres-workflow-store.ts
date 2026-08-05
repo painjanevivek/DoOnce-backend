@@ -99,6 +99,28 @@ export class PostgresWorkflowStore implements WorkflowStore {
     }
   }
 
+  public async disableActive(id: string, user: AuthenticatedUser): Promise<number | undefined> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const result = await transaction.query<{ version: number; tenant_id: string }>(
+          "UPDATE workflow_versions SET status = 'archived' WHERE workflow_id = $1 AND status = 'active' RETURNING version, tenant_id",
+          [id],
+        );
+        const active = result.rows[0];
+        if (!active || active.tenant_id !== user.tenantId) return undefined;
+        await transaction.query("UPDATE workflows SET active_version = NULL, updated_at = now() WHERE id = $1", [id]);
+        await transaction.query(
+          "INSERT INTO workflow_audit_events (tenant_id, workflow_id, workflow_version, actor_id, event_type, metadata) VALUES ($1, $2, $3, $4, 'workflow.disabled', '{}'::jsonb)",
+          [active.tenant_id, id, active.version, user.userId],
+        );
+        return active.version;
+      });
+    } finally {
+      client.release();
+    }
+  }
+
   public async listAuditEvents(workflowId: string, user: AuthenticatedUser): Promise<WorkflowAuditEvent[]> {
     const client = await this.pool.connect();
     try {

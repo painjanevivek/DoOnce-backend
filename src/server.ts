@@ -360,6 +360,25 @@ export async function buildServer(options: ServerOptions = {}) {
     }
   });
 
+  app.post<{ Params: { id: string } }>("/api/v1/workflows/:id/disable", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const version = await workflows.disableActive(user, request.params.id);
+      if (!version) return reply.code(404).send({ error: "Active workflow not found." });
+      return { workflowId: request.params.id, disabledVersion: version };
+    } catch (error) {
+      if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "Only an owner can disable workflows." });
+      throw error;
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/v1/workflows/:id/preview", {
     schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
   }, async (request, reply) => {

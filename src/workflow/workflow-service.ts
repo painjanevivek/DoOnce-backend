@@ -14,7 +14,7 @@ export interface WorkflowAuditEvent {
   id: string;
   workflowId: string;
   version: number;
-  eventType: "workflow.draft_created" | "workflow.policy_previewed" | "workflow.published";
+  eventType: "workflow.draft_created" | "workflow.policy_previewed" | "workflow.published" | "workflow.disabled";
   createdAt: string;
 }
 
@@ -33,6 +33,7 @@ export interface WorkflowStore {
   findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined>;
   markPolicyPreviewed(id: string, user: AuthenticatedUser, previewedAt: string): Promise<WorkflowDraft | undefined>;
   activate(draft: PublishedWorkflowVersion, user: AuthenticatedUser): Promise<void>;
+  disableActive(id: string, user: AuthenticatedUser): Promise<number | undefined>;
   listAuditEvents(workflowId: string, user: AuthenticatedUser): Promise<WorkflowAuditEvent[]>;
 }
 
@@ -88,6 +89,11 @@ export class WorkflowService {
     return this.store.listAuditEvents(workflowId, user);
   }
 
+  public async disableActive(user: AuthenticatedUser, workflowId: string): Promise<number | undefined> {
+    requireWorkflowOwner(user.role);
+    return this.store.disableActive(workflowId, user);
+  }
+
   public async reviewDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {
     const draft = await this.store.findDraft(workflowId, user);
     if (!draft) return undefined;
@@ -97,6 +103,10 @@ export class WorkflowService {
 
 function requireWorkflowAuthor(role: MembershipRole): void {
   if (role !== "owner" && role !== "builder") throw new WorkflowAccessError("This role cannot change workflows.");
+}
+
+function requireWorkflowOwner(role: MembershipRole): void {
+  if (role !== "owner") throw new WorkflowAccessError("Only an owner can disable a workflow.");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
