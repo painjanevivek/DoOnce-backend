@@ -154,7 +154,7 @@ export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
 }
 
 function isSupportedLocalDemo(workflow: WorkflowDraft): boolean {
-  return workflow.steps.length > 0 && workflow.steps.every((step) => step.kind === "download" && ["localhost", "127.0.0.1"].includes(step.domain) && step.path === "/demo/reports");
+  return workflow.steps.length === 1 && workflow.steps.every((step) => step.kind === "download" && ["localhost", "127.0.0.1"].includes(step.domain) && step.path === "/demo/reports");
 }
 
 function isUniqueViolation(error: unknown): error is { code: string } {

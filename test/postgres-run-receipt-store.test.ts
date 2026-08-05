@@ -89,6 +89,37 @@ test("imports a completed test receipt for the newest draft version", async () =
   assert.ok(queries.some(({ sql, parameters }) => sql.startsWith("INSERT INTO workflow_run_receipts") && parameters?.[3] === 2));
 });
 
+test("refuses test evidence for a draft with more than the one supported download step", async () => {
+  const queries: string[] = [];
+  const draft = {
+    ...safeReportWorkflowFixture,
+    allowedDomains: ["localhost"],
+    steps: [
+      ...safeReportWorkflowFixture.steps.map((step) => ({ ...step, domain: "localhost", path: "/demo/reports" })),
+      { ...safeReportWorkflowFixture.steps[0], id: "e0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", domain: "localhost", path: "/demo/reports" },
+    ],
+  };
+  const store = new PostgresRunReceiptStore({
+    connect: async () => ({
+      query: async (sql: string) => {
+        queries.push(sql);
+        if (sql.startsWith("SELECT version, definition") && sql.includes("status = 'draft'")) return { rows: [{ version: 1, definition: draft }] };
+        return { rows: [] };
+      },
+      release: () => undefined,
+    }),
+  } as unknown as Pool);
+
+  const receipt = await store.importDraftTestReceipt(
+    "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
+    { sourceId: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "completed" },
+    user,
+  );
+
+  assert.equal(receipt, undefined);
+  assert.equal(queries.some((sql) => sql.startsWith("INSERT INTO workflow_run_receipts")), false);
+});
+
 test("rejects a paused draft-test receipt before opening a database connection", async () => {
   let connected = false;
   const store = new PostgresRunReceiptStore({
