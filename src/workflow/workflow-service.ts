@@ -71,6 +71,14 @@ export class WorkflowService {
     return published.value;
   }
 
+  public async previewDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {
+    const draft = await this.store.findDraft(workflowId, user);
+    if (!draft) return undefined;
+    const preview = publishWorkflowDraft(draft, new Date().toISOString());
+    if (!preview.ok) throw new WorkflowInputError(preview.errors.join(" "));
+    return { id: draft.id, title: draft.title, version: draft.version, status: "draft", allowedDomains: draft.allowedDomains, steps: draft.steps };
+  }
+
   public listAuditEvents(user: AuthenticatedUser, workflowId: string): Promise<WorkflowAuditEvent[]> {
     return this.store.listAuditEvents(workflowId, user);
   }

@@ -312,6 +312,25 @@ export async function buildServer(options: ServerOptions = {}) {
     }
   });
 
+  app.post<{ Params: { id: string } }>("/api/v1/workflows/:id/preview", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const workflow = await workflows.previewDraft(user, request.params.id);
+      if (!workflow) return reply.code(404).send({ error: "Workflow not found." });
+      return { workflow, preview: "policy-passed" };
+    } catch (error) {
+      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: "Workflow cannot pass the current safety policy." });
+      throw error;
+    }
+  });
+
   return app;
 }
 
