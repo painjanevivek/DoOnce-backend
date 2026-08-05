@@ -261,6 +261,20 @@ export async function buildServer(options: ServerOptions = {}) {
     return { events: await workflows.listAuditEvents(user, request.params.id) };
   });
 
+  app.get<{ Params: { id: string } }>("/api/v1/workflows/:id/audit-events/export", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    const events = await workflows.listAuditEvents(user, request.params.id);
+    reply.header("cache-control", "no-store");
+    reply.header("content-disposition", "attachment; filename=doonce-workflow-audit.json");
+    return reply.type("application/json").send({ workflowId: request.params.id, events });
+  });
+
   app.get<{ Params: { id: string } }>("/api/v1/workflows/:id", {
     schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
   }, async (request, reply) => {

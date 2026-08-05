@@ -475,6 +475,20 @@ test("reports bounded per-version run health without returning individual receip
   assert.doesNotMatch(authorized.body, /tenantId|actorId|00000000/i);
 });
 
+test("exports only tenant-scoped workflow audit events as a no-store JSON attachment", async (t) => {
+  const app = await workflowApp();
+  t.after(async () => app.close());
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "audit-export@example.com", password: "correct-horse-battery-staple", tenantName: "Audit export" } });
+  const workflowId = "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
+  const response = await app.inject({ method: "GET", url: `/api/v1/workflows/${workflowId}/audit-events/export`, headers: { cookie: signedUp.headers["set-cookie"] ?? "" } });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(response.headers["content-disposition"], "attachment; filename=doonce-workflow-audit.json");
+  assert.equal(response.headers["content-type"], "application/json; charset=utf-8");
+  assert.deepEqual(response.json(), { workflowId, events: [] });
+});
+
 test("reports a duplicate local receipt without exposing database details", async (t) => {
   const app = await workflowApp(undefined, new DuplicateReceiptStore());
   t.after(async () => app.close());
