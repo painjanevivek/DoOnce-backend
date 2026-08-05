@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
@@ -27,7 +28,7 @@ export interface ServerOptions {
 
 const sessionCookieName = "doonce_session";
 
-export function buildServer(options: ServerOptions = {}) {
+export async function buildServer(options: ServerOptions = {}) {
   const allowedOrigins = allowedOriginsFromEnvironment();
   const app = Fastify({
     ajv: {
@@ -41,7 +42,7 @@ export function buildServer(options: ServerOptions = {}) {
     trustProxy: false,
   });
 
-  void app.register(helmet, {
+  await app.register(helmet, {
     global: true,
     contentSecurityPolicy: {
       useDefaults: false,
@@ -55,7 +56,7 @@ export function buildServer(options: ServerOptions = {}) {
     frameguard: { action: "deny" },
     referrerPolicy: { policy: "strict-origin-when-cross-origin" },
   });
-  void app.register(cors, {
+  await app.register(cors, {
     origin(origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
@@ -67,7 +68,8 @@ export function buildServer(options: ServerOptions = {}) {
     methods: ["GET", "POST"],
     allowedHeaders: ["content-type"],
   });
-  void app.register(cookie);
+  await app.register(cookie);
+  await app.register(rateLimit, { global: false, max: 100, timeWindow: "1 minute" });
 
   app.get("/health", async () => ({ status: "ok", service: "doonce-api" }));
 
@@ -102,6 +104,7 @@ export function buildServer(options: ServerOptions = {}) {
   });
 
   app.post<{ Body: { email?: unknown; password?: unknown; tenantName?: unknown } }>("/api/v1/auth/sign-up", {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     schema: {
       body: {
         type: "object",
@@ -130,6 +133,7 @@ export function buildServer(options: ServerOptions = {}) {
   });
 
   app.post<{ Body: { email?: unknown; password?: unknown } }>("/api/v1/auth/sign-in", {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     schema: {
       body: {
         type: "object",

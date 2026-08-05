@@ -45,6 +45,7 @@ Every tenant-owned table is protected by PostgreSQL row-level security. The serv
 - `GET /api/v1/auth/me` requires a valid, unexpired session.
 
 Session values contain signed tenant/user routing metadata, while only a SHA-256 hash of the full session token is stored in PostgreSQL. Passwords are stored using Node's `scrypt` key derivation function.
+Sign-up and sign-in are limited to five requests per minute for each client address.
 
 ### Workflow endpoints
 

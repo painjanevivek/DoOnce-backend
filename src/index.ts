@@ -17,7 +17,7 @@ const sessionSecret = process.env.SESSION_SECRET;
 if (databaseUrl && !sessionSecret) throw new Error("SESSION_SECRET is required when DATABASE_URL is configured.");
 
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefined;
-const app = buildServer({
+const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && sessionSecret ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool)) } : {}),
 });

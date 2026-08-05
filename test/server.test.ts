@@ -35,7 +35,7 @@ class ServerAuthStore implements AuthStore {
   public async revokeSession(tokenHash: string): Promise<void> { this.tokenHashes.delete(tokenHash); }
 }
 
-function authenticatedApp() {
+async function authenticatedApp() {
   return buildServer({ authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes") });
 }
 
@@ -48,7 +48,7 @@ class ServerWorkflowStore implements WorkflowStore {
   public async activate(draft: PublishedWorkflowVersion): Promise<void> { this.active.push(draft); }
 }
 
-function workflowApp() {
+async function workflowApp() {
   return buildServer({
     authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
     workflowService: new WorkflowService(new ServerWorkflowStore()),
@@ -56,7 +56,7 @@ function workflowApp() {
 }
 
 test("health endpoint sends explicit browser security headers", async (t) => {
-  const app = buildServer();
+  const app = await buildServer();
   t.after(async () => app.close());
 
   const response = await app.inject({ method: "GET", url: "/health" });
@@ -68,7 +68,7 @@ test("health endpoint sends explicit browser security headers", async (t) => {
 });
 
 test("policy API blocks a prohibited action", async (t) => {
-  const app = buildServer();
+  const app = await buildServer();
   t.after(async () => app.close());
 
   const response = await app.inject({
@@ -87,7 +87,7 @@ test("policy API blocks a prohibited action", async (t) => {
 });
 
 test("policy API rejects unknown request fields", async (t) => {
-  const app = buildServer();
+  const app = await buildServer();
   t.after(async () => app.close());
 
   const response = await app.inject({
@@ -100,7 +100,7 @@ test("policy API rejects unknown request fields", async (t) => {
 });
 
 test("auth sign-up sends an HttpOnly session cookie and exposes no password material", async (t) => {
-  const app = authenticatedApp();
+  const app = await authenticatedApp();
   t.after(async () => app.close());
 
   const response = await app.inject({
@@ -117,7 +117,7 @@ test("auth sign-up sends an HttpOnly session cookie and exposes no password mate
 });
 
 test("auth me requires a valid session cookie", async (t) => {
-  const app = authenticatedApp();
+  const app = await authenticatedApp();
   t.after(async () => app.close());
   const signedUp = await app.inject({
     method: "POST",
@@ -138,7 +138,7 @@ test("auth me requires a valid session cookie", async (t) => {
 });
 
 test("auth mutations reject a missing or unapproved Origin", async (t) => {
-  const app = authenticatedApp();
+  const app = await authenticatedApp();
   t.after(async () => app.close());
 
   const response = await app.inject({
@@ -151,7 +151,7 @@ test("auth mutations reject a missing or unapproved Origin", async (t) => {
 });
 
 test("auth CORS permits the configured browser origin to include credentials", async (t) => {
-  const app = authenticatedApp();
+  const app = await authenticatedApp();
   t.after(async () => app.close());
 
   const response = await app.inject({
@@ -169,8 +169,23 @@ test("auth CORS permits the configured browser origin to include credentials", a
   assert.equal(response.headers["access-control-allow-credentials"], "true");
 });
 
+test("sign-in is rate limited after five requests from one client", async (t) => {
+  const app = await authenticatedApp();
+  t.after(async () => app.close());
+  const request = {
+    method: "POST" as const,
+    url: "/api/v1/auth/sign-in",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "missing@example.com", password: "not-a-real-password" },
+  };
+  for (let count = 0; count < 5; count += 1) {
+    assert.equal((await app.inject(request)).statusCode, 401);
+  }
+  assert.equal((await app.inject(request)).statusCode, 429);
+});
+
 test("creates and publishes a policy-safe workflow for the authenticated tenant", async (t) => {
-  const app = workflowApp();
+  const app = await workflowApp();
   t.after(async () => app.close());
   const signedUp = await app.inject({
     method: "POST",
@@ -197,7 +212,7 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
 });
 
 test("workflow mutations reject a request without an approved Origin", async (t) => {
-  const app = workflowApp();
+  const app = await workflowApp();
   t.after(async () => app.close());
   const response = await app.inject({ method: "POST", url: "/api/v1/workflows", payload: workflowCreatePayload });
   assert.equal(response.statusCode, 403);
