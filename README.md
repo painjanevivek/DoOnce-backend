@@ -4,7 +4,7 @@ The DoOnce backend owns workflow validation, deterministic safety policy, tenant
 
 ## Phase 1 foundation
 
-This first iteration exposes a local-only API with a typed workflow validator and policy evaluator. It does not execute browser steps or persist customer data yet.
+This first iteration exposes a local-only API with a typed workflow validator, policy evaluator and immutable read-only workflow publication. It does not execute browser steps or persist customer data yet.
 
 ### Safety boundary
 
@@ -12,6 +12,7 @@ This first iteration exposes a local-only API with a typed workflow validator an
 - Reversible writes require an explicit approval checkpoint.
 - Communication, financial, credential, OTP, deletion and submission actions are blocked or paused.
 - Unknown actions pause rather than continuing.
+- Published workflow versions cannot be edited; every change begins as a new draft version.
 
 ## Local development
 

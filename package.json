@@ -12,7 +12,7 @@
     "start": "node dist/index.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test test/action-policy.test.ts test/workflow-schema.test.ts test/server.test.ts"
+    "test": "tsx --test test/action-policy.test.ts test/workflow-schema.test.ts test/workflow-versioning.test.ts test/server.test.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",
