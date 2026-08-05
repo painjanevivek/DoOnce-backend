@@ -60,6 +60,10 @@ All state-changing authentication and workflow routes require a configured brows
 
 Unexpected API failures return a generic client-safe error. Structured server logs retain the error type, code, status and stack locations without recording error messages that could contain sensitive values.
 
+## Pre-launch policy drafts
+
+Internal drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). They are intentionally marked for legal review and must not be published until the company, jurisdiction, and data-processing placeholders are approved.
+
 ### Operational controls
 
 - Set `DOONCE_WORKFLOW_CHANGES_ENABLED=false` to block draft creation and publication while keeping the dashboard readable.
