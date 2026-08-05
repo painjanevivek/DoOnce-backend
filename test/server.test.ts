@@ -244,6 +244,14 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
   assert.equal(response.statusCode, 201);
   assert.notEqual(response.json().workflow.tenantId, safeReportWorkflowFixture.tenantId);
 
+  const review = await app.inject({
+    method: "GET",
+    url: `/api/v1/workflows/${response.json().workflow.id}`,
+    headers: { cookie: signedUp.headers["set-cookie"] ?? "" },
+  });
+  assert.equal(review.statusCode, 200);
+  assert.equal(review.json().workflow.steps[0].kind, "download");
+
   const published = await app.inject({
     method: "POST",
     url: `/api/v1/workflows/${response.json().workflow.id}/publish`,

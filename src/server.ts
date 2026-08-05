@@ -223,6 +223,19 @@ export async function buildServer(options: ServerOptions = {}) {
     return { events: await workflows.listAuditEvents(user, request.params.id) };
   });
 
+  app.get<{ Params: { id: string } }>("/api/v1/workflows/:id", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    const workflow = await workflows.reviewDraft(user, request.params.id);
+    if (!workflow) return reply.code(404).send({ error: "Workflow not found." });
+    return { workflow };
+  });
+
   app.post<{ Body: unknown }>("/api/v1/workflows", {
     schema: {
       body: {

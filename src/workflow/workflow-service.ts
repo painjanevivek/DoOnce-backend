@@ -18,6 +18,15 @@ export interface WorkflowAuditEvent {
   createdAt: string;
 }
 
+export interface WorkflowReview {
+  id: string;
+  title: string;
+  version: number;
+  status: "draft" | "active";
+  allowedDomains: string[];
+  steps: WorkflowDraft["steps"];
+}
+
 export interface WorkflowStore {
   createDraft(draft: WorkflowDraft): Promise<void>;
   listWorkflows(user: AuthenticatedUser): Promise<WorkflowSummary[]>;
@@ -64,6 +73,12 @@ export class WorkflowService {
 
   public listAuditEvents(user: AuthenticatedUser, workflowId: string): Promise<WorkflowAuditEvent[]> {
     return this.store.listAuditEvents(workflowId, user);
+  }
+
+  public async reviewDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {
+    const draft = await this.store.findDraft(workflowId, user);
+    if (!draft) return undefined;
+    return { id: draft.id, title: draft.title, version: draft.version, status: "draft", allowedDomains: draft.allowedDomains, steps: draft.steps };
   }
 }
 
