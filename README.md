@@ -60,6 +60,10 @@ All state-changing authentication and workflow routes require a configured brows
 
 Unexpected API failures return a generic client-safe error. Structured server logs retain the error type, code, status and stack locations without recording error messages that could contain sensitive values.
 
+## Controlled-run foundation
+
+`src/runner/run-state-machine.ts` defines the only allowed lifecycle for a future runner: validate, preview, execute, verify, then complete. Any uncertain or illegal transition pauses; cancellation and terminal states cannot resume. It intentionally contains no browser authority or network calls.
+
 ## Pre-launch policy drafts
 
 Internal drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). They are intentionally marked for legal review and must not be published until the company, jurisdiction, and data-processing placeholders are approved.
