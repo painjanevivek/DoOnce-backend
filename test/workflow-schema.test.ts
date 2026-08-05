@@ -24,3 +24,18 @@ test("rejects a workflow path traversal attempt", () => {
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.errors.join(" "), /safe relative path/);
 });
+
+test("accepts the explicit local demo domains and no other bare hostname", () => {
+  for (const domain of ["localhost", "127.0.0.1"]) {
+    assert.equal(validateWorkflowDraft({
+      ...safeReportWorkflowFixture,
+      allowedDomains: [domain],
+      steps: [{ ...safeReportWorkflowFixture.steps[0], domain }],
+    }).ok, true);
+  }
+  assert.equal(validateWorkflowDraft({
+    ...safeReportWorkflowFixture,
+    allowedDomains: ["intranet"],
+    steps: [{ ...safeReportWorkflowFixture.steps[0], domain: "intranet" }],
+  }).ok, false);
+});

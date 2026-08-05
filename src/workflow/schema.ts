@@ -5,6 +5,7 @@ import {
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const domainPattern = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+const localDevelopmentDomains = new Set(["localhost", "127.0.0.1"]);
 
 export interface WorkflowStep {
   id: string;
@@ -39,7 +40,7 @@ function isValidPath(value: unknown): value is string {
 }
 
 function isValidDomain(value: unknown): value is string {
-  return typeof value === "string" && domainPattern.test(value);
+  return typeof value === "string" && (localDevelopmentDomains.has(value) || domainPattern.test(value));
 }
 
 function isUuid(value: unknown): value is string {

@@ -37,6 +37,8 @@ npm run db:migrate
 
 Every tenant-owned table is protected by PostgreSQL row-level security. The server derives tenant/user context from a signed session token and sets `app.tenant_id` plus `app.user_id` inside the same transaction. It does not trust tenant IDs supplied by browser requests.
 
+Workflow domains must be fully qualified public domains, except for the explicit local demo hosts `localhost` and `127.0.0.1`. Other bare internal hostnames remain rejected.
+
 ### Authentication endpoints
 
 - `POST /api/v1/auth/sign-up` creates an owner account and a tenant. It returns no password material and sets a `HttpOnly`, `SameSite=Lax` session cookie.
