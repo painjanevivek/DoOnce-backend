@@ -271,6 +271,7 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!auth || !runReceipts) return reply.code(503).send({ error: "Run receipt import is not configured." });
     const user = await auth.currentUser(request.cookies[sessionCookieName]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    if (!canImportRunReceipts(user.role)) return reply.code(403).send({ error: "This role cannot save run receipts." });
     const { sourceId, outcome, pauseReason } = request.body;
     if (typeof sourceId !== "string" || (outcome !== "completed" && outcome !== "paused") || ((outcome === "paused") !== (typeof pauseReason === "string"))) return reply.code(400).send({ error: "Invalid run receipt import." });
     try {
@@ -409,4 +410,8 @@ function redactRunReceipt(receipt: RunReceipt) {
     startedAt: receipt.startedAt,
     finishedAt: receipt.finishedAt,
   };
+}
+
+function canImportRunReceipts(role: "owner" | "builder" | "runner" | "reviewer"): boolean {
+  return role === "owner" || role === "builder" || role === "runner";
 }

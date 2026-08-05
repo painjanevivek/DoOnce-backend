@@ -22,6 +22,8 @@ class ServerAuthStore implements AuthStore {
   private identity: SessionIdentity | undefined;
   private tokenHashes = new Set<string>();
 
+  public constructor(private readonly role: MembershipRole = "owner") {}
+
   public async register(input: Parameters<AuthStore["register"]>[0]): Promise<void> {
     this.account = { userId: input.userId, email: input.email, passwordHash: input.passwordHash, defaultTenantId: input.tenantId };
     this.identity = { tenantId: input.tenantId, userId: input.userId };
@@ -30,7 +32,7 @@ class ServerAuthStore implements AuthStore {
 
   public async findAccountByEmail(): Promise<AccountRecord | undefined> { return this.account; }
   public async findAccountByIdentity(): Promise<AccountRecord | undefined> { return this.account; }
-  public async findRole(): Promise<MembershipRole | undefined> { return "owner"; }
+  public async findRole(): Promise<MembershipRole | undefined> { return this.role; }
   public async createSession(input: SessionIdentity & { tokenHash: string }): Promise<void> { this.tokenHashes.add(input.tokenHash); }
   public async findSession(tokenHash: string, identity: SessionIdentity): Promise<boolean> {
     return this.tokenHashes.has(tokenHash) && identity.tenantId === this.identity?.tenantId && identity.userId === this.identity?.userId;
@@ -113,9 +115,9 @@ class DuplicateReceiptStore extends ServerRunReceiptStore {
   }
 }
 
-async function workflowApp(operationalControls?: OperationalControls, runReceiptStore?: LocalDemoReceiptStore) {
+async function workflowApp(operationalControls?: OperationalControls, runReceiptStore?: LocalDemoReceiptStore, role: MembershipRole = "owner") {
   return buildServer({
-    authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
+    authService: new AuthService(new ServerAuthStore(role), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
     workflowService: new WorkflowService(new ServerWorkflowStore()),
     ...(operationalControls ? { operationalControls } : {}),
     ...(runReceiptStore ? { runReceiptStore } : {}),
@@ -295,6 +297,23 @@ test("imports a local receipt only through an authenticated same-origin dashboar
   assert.equal("actorId" in accepted.json().receipt, false);
   assert.equal(receipts.imports.length, 1);
   assert.equal(rejected.statusCode, 403);
+});
+
+test("allows runners but denies reviewers from saving a run receipt", async (t) => {
+  const runnerReceipts = new ServerRunReceiptStore();
+  const reviewerReceipts = new ServerRunReceiptStore();
+  const runnerApp = await workflowApp(undefined, runnerReceipts, "runner");
+  const reviewerApp = await workflowApp(undefined, reviewerReceipts, "reviewer");
+  t.after(async () => Promise.all([runnerApp.close(), reviewerApp.close()]));
+  const signup = { method: "POST" as const, url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "role-receipt@example.com", password: "correct-horse-battery-staple", tenantName: "Role receipt" } };
+  const runner = await runnerApp.inject(signup);
+  const reviewer = await reviewerApp.inject(signup);
+  const receiptId = "e0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
+  const request = (cookie: string | undefined) => ({ method: "POST" as const, url: "/api/v1/workflows/a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b/run-receipts/import", headers: { origin: "http://localhost:3000", cookie: cookie ?? "" }, payload: { sourceId: receiptId, outcome: "completed" } });
+
+  assert.equal((await runnerApp.inject(request(runner.headers["set-cookie"]))).statusCode, 201);
+  assert.equal((await reviewerApp.inject(request(reviewer.headers["set-cookie"]))).statusCode, 403);
+  assert.equal(reviewerReceipts.imports.length, 0);
 });
 
 test("lists tenant-scoped run receipt history for an authenticated dashboard session", async (t) => {

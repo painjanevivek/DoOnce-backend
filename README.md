@@ -59,6 +59,7 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 - `GET /api/v1/workflows/:id/run-receipts` returns the newest 50 redacted receipts for that workflow within the authenticated tenant. It never returns browser page content, action values, tenant IDs, or actor IDs.
 
 Receipt imports are immutable. Re-saving the same local receipt returns a safe conflict response rather than creating a duplicate or exposing a database error.
+Owners, builders, and runners may save verified receipts; reviewers remain read-only.
 
 Draft creation, policy-preview completion, and publication each write an immutable audit event containing IDs, version, actor and timestamp. Metadata is limited to aggregate counts; it never includes browser content, action values, credentials or OTPs.
 
