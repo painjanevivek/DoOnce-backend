@@ -67,6 +67,12 @@ Draft creation, policy-preview completion, publication, and disabling each write
 
 All state-changing authentication and workflow routes require a configured browser `Origin`; credentialed CORS is enabled only for the explicit `DOONCE_ALLOWED_ORIGINS` allowlist.
 
+### Pilot support endpoint
+
+- `POST /api/v1/support-reports` lets any authenticated tenant member report a paused workflow, unexpected result, safety concern, or other problem from the dashboard.
+
+Reports deliberately contain only the selected category and server-derived tenant, reporter, ID, and timestamp. They never accept attachments, page content, selectors, action values, passwords, OTPs, or free-form diagnostic text.
+
 Unexpected API failures return a generic client-safe error. Structured server logs retain the error type, code, status and stack locations without recording error messages that could contain sensitive values.
 
 ## Controlled-run foundation

@@ -8,6 +8,7 @@ import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./work
 import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
 import type { RunReceipt } from "./runner/run-receipt.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
+import { supportReportCategories, type SupportReportCategory, type SupportReportStore } from "./support/postgres-support-report-store.js";
 import {
   evaluateActionPolicy,
   isActionKind,
@@ -28,6 +29,7 @@ export interface ServerOptions {
   authService?: AuthService;
   workflowService?: WorkflowService;
   runReceiptStore?: LocalDemoReceiptStore;
+  supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
 }
 
@@ -197,6 +199,28 @@ export async function buildServer(options: ServerOptions = {}) {
     const user = await auth.currentUser(request.cookies[sessionCookieName]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     return { user };
+  });
+
+  app.post<{ Body: { category?: unknown } }>("/api/v1/support-reports", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["category"],
+        additionalProperties: false,
+        properties: { category: { type: "string", enum: [...supportReportCategories] } },
+      },
+    },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const supportReports = options.supportReportStore;
+    if (!auth || !supportReports) return reply.code(503).send({ error: "Support reporting is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    const category = request.body.category;
+    if (typeof category !== "string" || !supportReportCategories.includes(category as SupportReportCategory)) return reply.code(400).send({ error: "Invalid support report category." });
+    const report = await supportReports.submit(category as SupportReportCategory, user);
+    return reply.code(201).send({ report });
   });
 
   app.get("/api/v1/workflows", async (request, reply) => {

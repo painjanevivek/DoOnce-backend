@@ -9,6 +9,7 @@ import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
 import { WorkflowService, type WorkflowAuditEvent, type WorkflowStore } from "../src/workflow/workflow-service.js";
 import type { OperationalControls } from "../src/system/operational-controls.js";
+import type { SubmittedSupportReport, SupportReportCategory, SupportReportStore } from "../src/support/postgres-support-report-store.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 
 const workflowCreatePayload = {
@@ -118,6 +119,15 @@ class ServerRunReceiptStore implements LocalDemoReceiptStore {
 class DuplicateReceiptStore extends ServerRunReceiptStore {
   public override async importLocalDemoReceipt(): Promise<RunReceipt> {
     throw new ReceiptAlreadyImportedError();
+  }
+}
+
+class ServerSupportReportStore implements SupportReportStore {
+  public readonly reports: Array<{ category: SupportReportCategory; user: AuthenticatedUser }> = [];
+
+  public async submit(category: SupportReportCategory, user: AuthenticatedUser): Promise<SubmittedSupportReport> {
+    this.reports.push({ category, user });
+    return { id: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", category, createdAt: "2026-08-05T00:00:00.000Z" };
   }
 }
 
@@ -270,6 +280,41 @@ test("auth CORS permits the configured browser origin to include credentials", a
   assert.equal(response.statusCode, 204);
   assert.equal(response.headers["access-control-allow-origin"], "http://localhost:3000");
   assert.equal(response.headers["access-control-allow-credentials"], "true");
+});
+
+test("stores a tenant-bound categorized support report without browser content", async (t) => {
+  const reports = new ServerSupportReportStore();
+  const app = await buildServer({
+    authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
+    supportReportStore: reports,
+  });
+  t.after(async () => app.close());
+  const signedUp = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "support@example.com", password: "correct-horse-battery-staple", tenantName: "Support tenant" },
+  });
+
+  const saved = await app.inject({
+    method: "POST",
+    url: "/api/v1/support-reports",
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { category: "workflow-paused" },
+  });
+  assert.equal(saved.statusCode, 201);
+  assert.equal(saved.json().report.category, "workflow-paused");
+  assert.equal(reports.reports.length, 1);
+  assert.equal(reports.reports[0]?.user.tenantId, signedUp.json().user.tenantId);
+
+  const invalid = await app.inject({
+    method: "POST",
+    url: "/api/v1/support-reports",
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { category: "page-html" },
+  });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(reports.reports.length, 1);
 });
 
 test("imports a local receipt only through an authenticated same-origin dashboard request", async (t) => {

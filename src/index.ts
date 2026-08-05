@@ -4,6 +4,7 @@ import { PostgresAuthStore } from "./auth/postgres-auth-store.js";
 import { PostgresWorkflowStore } from "./workflow/postgres-workflow-store.js";
 import { WorkflowService } from "./workflow/workflow-service.js";
 import { PostgresRunReceiptStore } from "./runner/postgres-run-receipt-store.js";
+import { PostgresSupportReportStore } from "./support/postgres-support-report-store.js";
 import { Pool } from "pg";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
@@ -22,6 +23,7 @@ const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && sessionSecret ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool)) } : {}),
   ...(pool && sessionSecret ? { runReceiptStore: new PostgresRunReceiptStore(pool) } : {}),
+  ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (pool) app.addHook("onClose", async () => pool.end());
 
