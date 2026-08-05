@@ -403,6 +403,26 @@ export async function buildServer(options: ServerOptions = {}) {
     }
   });
 
+  app.post<{ Params: { id: string } }>("/api/v1/workflows/:id/repair-draft", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const workflow = await workflows.createRepairDraft(user, request.params.id);
+      if (!workflow) return reply.code(404).send({ error: "Published workflow not found." });
+      return reply.code(201).send({ workflow, repair: "reconfirm-safe-step" });
+    } catch (error) {
+      if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot repair workflows." });
+      throw error;
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/v1/workflows/:id/preview", {
     schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
   }, async (request, reply) => {

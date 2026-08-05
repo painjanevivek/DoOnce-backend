@@ -99,6 +99,47 @@ export class PostgresWorkflowStore implements WorkflowStore {
     }
   }
 
+  public async createRepairDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const existingDraft = await transaction.query<{ definition: unknown }>(
+          "SELECT definition FROM workflow_versions WHERE workflow_id = $1 AND status = 'draft' ORDER BY version DESC LIMIT 1",
+          [id],
+        );
+        const existingValidation = validateWorkflowDraft(existingDraft.rows[0]?.definition);
+        if (existingValidation.ok && existingValidation.value.tenantId === user.tenantId) return existingValidation.value;
+
+        const source = await transaction.query<{ definition: unknown }>(
+          "SELECT definition FROM workflow_versions WHERE workflow_id = $1 AND status IN ('active', 'archived') ORDER BY version DESC LIMIT 1",
+          [id],
+        );
+        const sourceValidation = validateWorkflowDraft(source.rows[0]?.definition);
+        if (!sourceValidation.ok || sourceValidation.value.tenantId !== user.tenantId) return undefined;
+        const draft: WorkflowDraft = {
+          id: sourceValidation.value.id,
+          version: sourceValidation.value.version + 1,
+          tenantId: sourceValidation.value.tenantId,
+          ownerId: sourceValidation.value.ownerId,
+          title: sourceValidation.value.title,
+          allowedDomains: [...sourceValidation.value.allowedDomains],
+          steps: sourceValidation.value.steps.map((step) => ({ ...step })),
+        };
+        await transaction.query(
+          "INSERT INTO workflow_versions (workflow_id, version, tenant_id, status, definition, created_by) VALUES ($1, $2, $3, 'draft', $4::jsonb, $5)",
+          [draft.id, draft.version, draft.tenantId, JSON.stringify(draft), user.userId],
+        );
+        await transaction.query(
+          "INSERT INTO workflow_audit_events (tenant_id, workflow_id, workflow_version, actor_id, event_type, metadata) VALUES ($1, $2, $3, $4, 'workflow.repair_draft_created', $5::jsonb)",
+          [draft.tenantId, draft.id, draft.version, user.userId, JSON.stringify({ sourceVersion: sourceValidation.value.version })],
+        );
+        return draft;
+      });
+    } finally {
+      client.release();
+    }
+  }
+
   public async disableActive(id: string, user: AuthenticatedUser): Promise<number | undefined> {
     const client = await this.pool.connect();
     try {

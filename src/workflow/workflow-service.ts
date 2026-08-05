@@ -14,7 +14,7 @@ export interface WorkflowAuditEvent {
   id: string;
   workflowId: string;
   version: number;
-  eventType: "workflow.draft_created" | "workflow.policy_previewed" | "workflow.published" | "workflow.disabled";
+  eventType: "workflow.draft_created" | "workflow.policy_previewed" | "workflow.published" | "workflow.disabled" | "workflow.repair_draft_created";
   createdAt: string;
 }
 
@@ -33,6 +33,7 @@ export interface WorkflowStore {
   findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined>;
   markPolicyPreviewed(id: string, user: AuthenticatedUser, previewedAt: string): Promise<WorkflowDraft | undefined>;
   activate(draft: PublishedWorkflowVersion, user: AuthenticatedUser): Promise<void>;
+  createRepairDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined>;
   disableActive(id: string, user: AuthenticatedUser): Promise<number | undefined>;
   listAuditEvents(workflowId: string, user: AuthenticatedUser): Promise<WorkflowAuditEvent[]>;
 }
@@ -92,6 +93,13 @@ export class WorkflowService {
   public async disableActive(user: AuthenticatedUser, workflowId: string): Promise<number | undefined> {
     requireWorkflowOwner(user.role);
     return this.store.disableActive(workflowId, user);
+  }
+
+  public async createRepairDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {
+    requireWorkflowAuthor(user.role);
+    const draft = await this.store.createRepairDraft(workflowId, user);
+    if (!draft) return undefined;
+    return { id: draft.id, title: draft.title, version: draft.version, status: "draft", allowedDomains: draft.allowedDomains, steps: draft.steps };
   }
 
   public async reviewDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {

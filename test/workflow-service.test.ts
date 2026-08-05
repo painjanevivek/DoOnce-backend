@@ -18,7 +18,7 @@ class MemoryWorkflowStore implements WorkflowStore {
   }
   public async listWorkflows(): Promise<[]> { return []; }
   public async findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined> {
-    return this.drafts.find((draft) => draft.id === id && draft.tenantId === user.tenantId);
+    return [...this.drafts].reverse().find((draft) => draft.id === id && draft.tenantId === user.tenantId);
   }
   public async markPolicyPreviewed(id: string, user: AuthenticatedUser, policyPreviewedAt: string): Promise<WorkflowDraft | undefined> {
     const draft = await this.findDraft(id, user);
@@ -30,6 +30,16 @@ class MemoryWorkflowStore implements WorkflowStore {
   public async activate(draft: PublishedWorkflowVersion): Promise<void> {
     this.active.push(draft);
     this.events.push({ id: `${draft.id}-published`, workflowId: draft.id, version: draft.version, eventType: "workflow.published", createdAt: new Date().toISOString() });
+  }
+  public async createRepairDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined> {
+    const existing = await this.findDraft(id, user);
+    if (existing?.version !== 1) return existing;
+    const active = this.active.find((workflow) => workflow.id === id && workflow.tenantId === user.tenantId);
+    if (!active) return undefined;
+    const repair: WorkflowDraft = { id: active.id, version: active.version + 1, tenantId: active.tenantId, ownerId: active.ownerId, title: active.title, allowedDomains: [...active.allowedDomains], steps: active.steps.map((step) => ({ ...step })) };
+    this.drafts.push(repair);
+    this.events.push({ id: `${id}-repair`, workflowId: id, version: repair.version, eventType: "workflow.repair_draft_created", createdAt: new Date().toISOString() });
+    return repair;
   }
   public async disableActive(id: string): Promise<number | undefined> {
     const active = this.active.find((workflow) => workflow.id === id);
@@ -102,4 +112,19 @@ test("lets only an owner disable an active workflow and records the event", asyn
   await assert.rejects(() => service.disableActive({ ...owner, role: "builder" }, draft.id), WorkflowAccessError);
   assert.deepEqual(store.disabled, [{ id: draft.id, version: 1 }]);
   assert.equal((await service.listAuditEvents(owner, draft.id)).at(-1)?.eventType, "workflow.disabled");
+});
+
+test("creates one reviewable next-version repair draft from the active workflow", async () => {
+  const store = new MemoryWorkflowStore();
+  const service = new WorkflowService(store);
+  const draft = await service.createDraft(owner, safeReportWorkflowFixture);
+  await service.previewDraft(owner, draft.id);
+  await service.publishDraft(owner, draft.id);
+
+  const repair = await service.createRepairDraft(owner, draft.id);
+  assert.equal(repair?.version, 2);
+  assert.equal(repair?.status, "draft");
+  assert.equal(repair?.steps[0]?.name, draft.steps[0]?.name);
+  assert.equal((await service.createRepairDraft(owner, draft.id))?.version, 2);
+  assert.equal((await service.listAuditEvents(owner, draft.id)).at(-1)?.eventType, "workflow.repair_draft_created");
 });
