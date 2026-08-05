@@ -4,7 +4,7 @@ The DoOnce backend owns workflow validation, deterministic safety policy, tenant
 
 ## Phase 1 foundation
 
-This first iteration exposes a local-only API with a typed workflow validator, policy evaluator and immutable read-only workflow publication. It does not execute browser steps or persist customer data yet.
+This first iteration exposes a local-only API with a typed workflow validator, policy evaluator, immutable read-only workflow publication, and database-backed account sessions. It does not execute browser steps.
 
 ### Safety boundary
 
@@ -23,13 +23,22 @@ npm run dev
 
 The API listens on `http://127.0.0.1:4000` by default. Set `DOONCE_ALLOWED_ORIGINS` to a comma-separated dashboard-origin allowlist for a different local setup.
 
-Run PostgreSQL migrations only after setting a real `DATABASE_URL`:
+Set a real `DATABASE_URL` and a random `SESSION_SECRET` of at least 32 bytes, then run migrations:
 
 ```text
 npm run db:migrate
 ```
 
-Every tenant-owned table is protected by PostgreSQL row-level security. Request-scoped database access must set `app.tenant_id` and `app.user_id` inside a transaction; the application will add those authenticated routes next.
+Every tenant-owned table is protected by PostgreSQL row-level security. The server derives tenant/user context from a signed session token and sets `app.tenant_id` plus `app.user_id` inside the same transaction. It does not trust tenant IDs supplied by browser requests.
+
+### Authentication endpoints
+
+- `POST /api/v1/auth/sign-up` creates an owner account and a tenant. It returns no password material and sets a `HttpOnly`, `SameSite=Lax` session cookie.
+- `POST /api/v1/auth/sign-in` returns one generic `401` response for unknown accounts and invalid passwords.
+- `POST /api/v1/auth/sign-out` revokes the current session.
+- `GET /api/v1/auth/me` requires a valid, unexpired session.
+
+Session values contain signed tenant/user routing metadata, while only a SHA-256 hash of the full session token is stored in PostgreSQL. Passwords are stored using Node's `scrypt` key derivation function.
 
 ## Checks
 

@@ -1,4 +1,7 @@
 import { buildServer } from "./server.js";
+import { AuthService } from "./auth/auth-service.js";
+import { PostgresAuthStore } from "./auth/postgres-auth-store.js";
+import { Pool } from "pg";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -7,6 +10,14 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("PORT must be an integer between 1 and 65535.");
 }
 
-const app = buildServer();
+const databaseUrl = process.env.DATABASE_URL;
+const sessionSecret = process.env.SESSION_SECRET;
+if (databaseUrl && !sessionSecret) throw new Error("SESSION_SECRET is required when DATABASE_URL is configured.");
+
+const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefined;
+const app = buildServer({
+  ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
+});
+if (pool) app.addHook("onClose", async () => pool.end());
 
 void app.listen({ host, port });
