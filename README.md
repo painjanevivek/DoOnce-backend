@@ -40,6 +40,14 @@ Every tenant-owned table is protected by PostgreSQL row-level security. The serv
 
 Session values contain signed tenant/user routing metadata, while only a SHA-256 hash of the full session token is stored in PostgreSQL. Passwords are stored using Node's `scrypt` key derivation function.
 
+### Workflow endpoints
+
+- `GET /api/v1/workflows` lists workflows only within the authenticated tenant.
+- `POST /api/v1/workflows` creates a draft. The server assigns its ID, tenant and owner; browser input cannot choose them.
+- `POST /api/v1/workflows/:id/publish` permits only owner/builder roles and only when every step is currently policy-allowlisted. Reversible writes, approvals, submissions and unknown actions cannot be published.
+
+All state-changing authentication and workflow routes require a configured browser `Origin`; credentialed CORS is enabled only for the explicit `DOONCE_ALLOWED_ORIGINS` allowlist.
+
 ## Checks
 
 ```text

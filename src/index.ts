@@ -1,6 +1,8 @@
 import { buildServer } from "./server.js";
 import { AuthService } from "./auth/auth-service.js";
 import { PostgresAuthStore } from "./auth/postgres-auth-store.js";
+import { PostgresWorkflowStore } from "./workflow/postgres-workflow-store.js";
+import { WorkflowService } from "./workflow/workflow-service.js";
 import { Pool } from "pg";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
@@ -17,6 +19,7 @@ if (databaseUrl && !sessionSecret) throw new Error("SESSION_SECRET is required w
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefined;
 const app = buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
+  ...(pool && sessionSecret ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool)) } : {}),
 });
 if (pool) app.addHook("onClose", async () => pool.end());
 

@@ -1,0 +1,63 @@
+import { randomUUID } from "node:crypto";
+import type { AuthenticatedUser, MembershipRole } from "../auth/auth-service.js";
+import { publishWorkflowDraft, type PublishedWorkflowVersion } from "./versioning.js";
+import { validateWorkflowDraft, type WorkflowDraft } from "./schema.js";
+
+export interface WorkflowSummary {
+  id: string;
+  title: string;
+  activeVersion: number | null;
+  updatedAt: string;
+}
+
+export interface WorkflowStore {
+  createDraft(draft: WorkflowDraft): Promise<void>;
+  listWorkflows(user: AuthenticatedUser): Promise<WorkflowSummary[]>;
+  findDraft(id: string, user: AuthenticatedUser): Promise<WorkflowDraft | undefined>;
+  activate(draft: PublishedWorkflowVersion, user: AuthenticatedUser): Promise<void>;
+}
+
+export class WorkflowInputError extends Error {}
+export class WorkflowAccessError extends Error {}
+
+export class WorkflowService {
+  public constructor(private readonly store: WorkflowStore) {}
+
+  public async createDraft(user: AuthenticatedUser, input: unknown): Promise<WorkflowDraft> {
+    requireWorkflowAuthor(user.role);
+    if (!isRecord(input)) throw new WorkflowInputError("Workflow input must be an object.");
+    const draftInput = {
+      ...input,
+      id: randomUUID(),
+      version: 1,
+      tenantId: user.tenantId,
+      ownerId: user.userId,
+    };
+    const validation = validateWorkflowDraft(draftInput);
+    if (!validation.ok) throw new WorkflowInputError(validation.errors.join(" "));
+    await this.store.createDraft(validation.value);
+    return validation.value;
+  }
+
+  public listWorkflows(user: AuthenticatedUser): Promise<WorkflowSummary[]> {
+    return this.store.listWorkflows(user);
+  }
+
+  public async publishDraft(user: AuthenticatedUser, workflowId: string): Promise<PublishedWorkflowVersion | undefined> {
+    requireWorkflowAuthor(user.role);
+    const draft = await this.store.findDraft(workflowId, user);
+    if (!draft) return undefined;
+    const published = publishWorkflowDraft(draft, new Date().toISOString());
+    if (!published.ok) throw new WorkflowInputError(published.errors.join(" "));
+    await this.store.activate(published.value, user);
+    return published.value;
+  }
+}
+
+function requireWorkflowAuthor(role: MembershipRole): void {
+  if (role !== "owner" && role !== "builder") throw new WorkflowAccessError("This role cannot change workflows.");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

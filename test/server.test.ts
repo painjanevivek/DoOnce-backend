@@ -3,6 +3,16 @@ import test from "node:test";
 import { buildServer } from "../src/server.js";
 import { AuthService, type AccountRecord, type AuthStore, type MembershipRole } from "../src/auth/auth-service.js";
 import type { SessionIdentity } from "../src/auth/session-token.js";
+import type { WorkflowDraft } from "../src/workflow/schema.js";
+import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
+import { WorkflowService, type WorkflowStore } from "../src/workflow/workflow-service.js";
+import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
+
+const workflowCreatePayload = {
+  title: safeReportWorkflowFixture.title,
+  allowedDomains: safeReportWorkflowFixture.allowedDomains,
+  steps: safeReportWorkflowFixture.steps,
+};
 
 class ServerAuthStore implements AuthStore {
   private account: AccountRecord | undefined;
@@ -27,6 +37,22 @@ class ServerAuthStore implements AuthStore {
 
 function authenticatedApp() {
   return buildServer({ authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes") });
+}
+
+class ServerWorkflowStore implements WorkflowStore {
+  private readonly drafts: WorkflowDraft[] = [];
+  private readonly active: PublishedWorkflowVersion[] = [];
+  public async createDraft(draft: WorkflowDraft): Promise<void> { this.drafts.push(draft); }
+  public async listWorkflows(): Promise<[]> { return []; }
+  public async findDraft(id: string): Promise<WorkflowDraft | undefined> { return this.drafts.find((draft) => draft.id === id); }
+  public async activate(draft: PublishedWorkflowVersion): Promise<void> { this.active.push(draft); }
+}
+
+function workflowApp() {
+  return buildServer({
+    authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
+    workflowService: new WorkflowService(new ServerWorkflowStore()),
+  });
 }
 
 test("health endpoint sends explicit browser security headers", async (t) => {
@@ -141,4 +167,38 @@ test("auth CORS permits the configured browser origin to include credentials", a
   assert.equal(response.statusCode, 204);
   assert.equal(response.headers["access-control-allow-origin"], "http://localhost:3000");
   assert.equal(response.headers["access-control-allow-credentials"], "true");
+});
+
+test("creates and publishes a policy-safe workflow for the authenticated tenant", async (t) => {
+  const app = workflowApp();
+  t.after(async () => app.close());
+  const signedUp = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "owner@example.com", password: "not-a-real-password", tenantName: "DoOnce demo" },
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/workflows",
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: workflowCreatePayload,
+  });
+  assert.equal(response.statusCode, 201);
+  assert.notEqual(response.json().workflow.tenantId, safeReportWorkflowFixture.tenantId);
+
+  const published = await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${response.json().workflow.id}/publish`,
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+  });
+  assert.equal(published.statusCode, 200);
+  assert.equal(published.json().workflow.status, "active");
+});
+
+test("workflow mutations reject a request without an approved Origin", async (t) => {
+  const app = workflowApp();
+  t.after(async () => app.close());
+  const response = await app.inject({ method: "POST", url: "/api/v1/workflows", payload: workflowCreatePayload });
+  assert.equal(response.statusCode, 403);
 });

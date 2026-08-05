@@ -3,6 +3,7 @@ import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import Fastify from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
+import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
 import {
   evaluateActionPolicy,
   isActionKind,
@@ -21,6 +22,7 @@ function allowedOriginsFromEnvironment(): string[] {
 
 export interface ServerOptions {
   authService?: AuthService;
+  workflowService?: WorkflowService;
 }
 
 const sessionCookieName = "doonce_session";
@@ -169,6 +171,89 @@ export function buildServer(options: ServerOptions = {}) {
     const user = await auth.currentUser(request.cookies[sessionCookieName]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     return { user };
+  });
+
+  app.get("/api/v1/workflows", async (request, reply) => {
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return { workflows: await workflows.listWorkflows(user) };
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/workflows", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["title", "allowedDomains", "steps"],
+        additionalProperties: false,
+        properties: {
+          title: { type: "string", minLength: 1, maxLength: 120 },
+          allowedDomains: { type: "array", minItems: 1, items: { type: "string", maxLength: 253 } },
+          steps: {
+            type: "array",
+            minItems: 1,
+            maxItems: 100,
+            items: {
+              type: "object",
+              required: ["id", "kind", "name", "expectedOutcome", "domain", "path"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", maxLength: 36 },
+                kind: { type: "string", maxLength: 32 },
+                name: { type: "string", maxLength: 120 },
+                expectedOutcome: { type: "string", maxLength: 240 },
+                domain: { type: "string", maxLength: 253 },
+                path: { type: "string", maxLength: 2048 },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const draft = await workflows.createDraft(user, request.body);
+      return reply.code(201).send({ workflow: draft });
+    } catch (error) {
+      if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot create workflows." });
+      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: "Workflow does not meet the safety requirements." });
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/workflows/:id/publish", {
+    schema: {
+      params: {
+        type: "object",
+        required: ["id"],
+        additionalProperties: false,
+        properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } },
+      },
+    },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const workflow = await workflows.publishDraft(user, request.params.id);
+      if (!workflow) return reply.code(404).send({ error: "Workflow not found." });
+      return { workflow };
+    } catch (error) {
+      if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot publish workflows." });
+      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: "Workflow cannot be published under the current safety policy." });
+      throw error;
+    }
   });
 
   return app;
