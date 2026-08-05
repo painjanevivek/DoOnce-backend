@@ -203,6 +203,7 @@ export async function buildServer(options: ServerOptions = {}) {
   });
 
   app.post<{ Body: { category?: unknown; includeRunHealth?: unknown; workflowId?: unknown; workflowVersion?: unknown } }>("/api/v1/support-reports", {
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     schema: {
       body: {
         type: "object",

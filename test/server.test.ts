@@ -352,6 +352,18 @@ test("derives an opted-in support diagnostic from tenant-scoped receipt aggregat
   assert.doesNotMatch(response.body, /workflowId|sampleSize|pauseReasons/i);
 });
 
+test("rate limits support reports without affecting authenticated workflow reads", async (t) => {
+  const reports = new ServerSupportReportStore();
+  const app = await buildServer({ authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"), supportReportStore: reports, workflowService: new WorkflowService(new ServerWorkflowStore()) });
+  t.after(async () => app.close());
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "support-limit@example.com", password: "correct-horse-battery-staple", tenantName: "Support limits" } });
+  const report = { method: "POST" as const, url: "/api/v1/support-reports", headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" }, payload: { category: "other" } };
+
+  for (let count = 0; count < 10; count += 1) assert.equal((await app.inject(report)).statusCode, 201);
+  assert.equal((await app.inject(report)).statusCode, 429);
+  assert.equal((await app.inject({ method: "GET", url: "/api/v1/workflows", headers: { cookie: signedUp.headers["set-cookie"] ?? "" } })).statusCode, 200);
+});
+
 test("imports a local receipt only through an authenticated same-origin dashboard request", async (t) => {
   const receipts = new ServerRunReceiptStore();
   const app = await workflowApp(undefined, receipts);
