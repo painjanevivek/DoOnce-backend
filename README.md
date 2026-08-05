@@ -23,6 +23,14 @@ npm run dev
 
 The API listens on `http://127.0.0.1:4000` by default. Set `DOONCE_ALLOWED_ORIGINS` to a comma-separated dashboard-origin allowlist for a different local setup.
 
+Run PostgreSQL migrations only after setting a real `DATABASE_URL`:
+
+```text
+npm run db:migrate
+```
+
+Every tenant-owned table is protected by PostgreSQL row-level security. Request-scoped database access must set `app.tenant_id` and `app.user_id` inside a transaction; the application will add those authenticated routes next.
+
 ## Checks
 
 ```text
