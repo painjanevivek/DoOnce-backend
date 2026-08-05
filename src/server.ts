@@ -5,6 +5,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
+import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
 import {
   evaluateActionPolicy,
   isActionKind,
@@ -24,12 +25,14 @@ function allowedOriginsFromEnvironment(): string[] {
 export interface ServerOptions {
   authService?: AuthService;
   workflowService?: WorkflowService;
+  operationalControls?: OperationalControls;
 }
 
 const sessionCookieName = "doonce_session";
 
 export async function buildServer(options: ServerOptions = {}) {
   const allowedOrigins = allowedOriginsFromEnvironment();
+  const operationalControls = options.operationalControls ?? operationalControlsFromEnvironment();
   const app = Fastify({
     ajv: {
       customOptions: {
@@ -78,6 +81,8 @@ export async function buildServer(options: ServerOptions = {}) {
     message: "This endpoint describes policy only. It cannot execute or store workflows.",
     blocked: ["submit", "delete", "payment", "credential", "otp"],
     paused: ["unknown"],
+    workflowChangesEnabled: operationalControls.workflowChangesEnabled,
+    killSwitchActive: operationalControls.killSwitchActive,
   }));
 
   app.post<{ Body: { action?: unknown; fieldKind?: unknown } }>("/api/v1/policy/evaluate", {
@@ -218,6 +223,7 @@ export async function buildServer(options: ServerOptions = {}) {
     },
   }, async (request, reply) => {
     if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
     const auth = options.authService;
     const workflows = options.workflowService;
     if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });
@@ -244,6 +250,7 @@ export async function buildServer(options: ServerOptions = {}) {
     },
   }, async (request, reply) => {
     if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
     const auth = options.authService;
     const workflows = options.workflowService;
     if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });

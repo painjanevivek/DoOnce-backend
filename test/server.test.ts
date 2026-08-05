@@ -6,6 +6,7 @@ import type { SessionIdentity } from "../src/auth/session-token.js";
 import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
 import { WorkflowService, type WorkflowStore } from "../src/workflow/workflow-service.js";
+import type { OperationalControls } from "../src/system/operational-controls.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 
 const workflowCreatePayload = {
@@ -48,10 +49,11 @@ class ServerWorkflowStore implements WorkflowStore {
   public async activate(draft: PublishedWorkflowVersion): Promise<void> { this.active.push(draft); }
 }
 
-async function workflowApp() {
+async function workflowApp(operationalControls?: OperationalControls) {
   return buildServer({
     authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
     workflowService: new WorkflowService(new ServerWorkflowStore()),
+    ...(operationalControls ? { operationalControls } : {}),
   });
 }
 
@@ -216,4 +218,20 @@ test("workflow mutations reject a request without an approved Origin", async (t)
   t.after(async () => app.close());
   const response = await app.inject({ method: "POST", url: "/api/v1/workflows", payload: workflowCreatePayload });
   assert.equal(response.statusCode, 403);
+});
+
+test("kill switch blocks workflow mutations and is visible in public safety status", async (t) => {
+  const app = await workflowApp({ workflowChangesEnabled: false, killSwitchActive: true });
+  t.after(async () => app.close());
+  const safety = await app.inject({ method: "GET", url: "/api/v1/system/safety" });
+  const mutation = await app.inject({
+    method: "POST",
+    url: "/api/v1/workflows",
+    headers: { origin: "http://localhost:3000" },
+    payload: workflowCreatePayload,
+  });
+
+  assert.equal(safety.json().workflowChangesEnabled, false);
+  assert.equal(safety.json().killSwitchActive, true);
+  assert.equal(mutation.statusCode, 503);
 });

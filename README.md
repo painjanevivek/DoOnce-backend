@@ -55,6 +55,11 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 
 All state-changing authentication and workflow routes require a configured browser `Origin`; credentialed CORS is enabled only for the explicit `DOONCE_ALLOWED_ORIGINS` allowlist.
 
+### Operational controls
+
+- Set `DOONCE_WORKFLOW_CHANGES_ENABLED=false` to block draft creation and publication while keeping the dashboard readable.
+- Set `DOONCE_KILL_SWITCH=true` to override the workflow-change flag immediately. The public safety-status endpoint reports both controls without exposing tenant data.
+
 ## Checks
 
 ```text
