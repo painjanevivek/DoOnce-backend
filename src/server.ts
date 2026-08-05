@@ -31,7 +31,20 @@ export function buildServer() {
     trustProxy: false,
   });
 
-  void app.register(helmet, { global: true });
+  void app.register(helmet, {
+    global: true,
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'none'"],
+        baseUri: ["'none'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'none'"],
+      },
+    },
+    frameguard: { action: "deny" },
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  });
   void app.register(cors, {
     origin(origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) {
