@@ -55,6 +55,79 @@ test("maps a receipt uniqueness violation to a safe duplicate-import error", asy
   assert.equal(released, true);
 });
 
+test("imports a completed test receipt for the newest draft version", async () => {
+  const queries: Array<{ sql: string; parameters?: unknown[] }> = [];
+  const draft = {
+    ...safeReportWorkflowFixture,
+    tenantId,
+    ownerId: actorId,
+    version: 2,
+    allowedDomains: ["localhost"],
+    steps: safeReportWorkflowFixture.steps.map((step) => ({ ...step, domain: "localhost", path: "/demo/reports" })),
+  };
+  const store = new PostgresRunReceiptStore({
+    connect: async () => ({
+      query: async (sql: string, parameters?: unknown[]) => {
+        queries.push({ sql, parameters });
+        if (sql.startsWith("SELECT version, definition") && sql.includes("status = 'draft'")) return { rows: [{ version: 2, definition: draft }] };
+        return { rows: [] };
+      },
+      release: () => undefined,
+    }),
+  } as unknown as Pool);
+
+  const receipt = await store.importDraftTestReceipt(
+    "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
+    { sourceId: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "completed" },
+    user,
+  );
+
+  assert.equal(receipt?.workflowVersion, 2);
+  assert.equal(receipt?.outcome, "completed");
+  assert.equal(receipt?.pauseReason, undefined);
+  assert.ok(queries.some(({ sql }) => sql.includes("status = 'draft' ORDER BY version DESC LIMIT 1")));
+  assert.ok(queries.some(({ sql, parameters }) => sql.startsWith("INSERT INTO workflow_run_receipts") && parameters?.[3] === 2));
+});
+
+test("rejects a paused draft-test receipt before opening a database connection", async () => {
+  let connected = false;
+  const store = new PostgresRunReceiptStore({
+    connect: async () => {
+      connected = true;
+      throw new Error("database should not be reached");
+    },
+  } as unknown as Pool);
+
+  const receipt = await store.importDraftTestReceipt(
+    "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
+    { sourceId: "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "paused", pauseReason: "changed-page" },
+    user,
+  );
+
+  assert.equal(receipt, undefined);
+  assert.equal(connected, false);
+});
+
+test("checks completed test evidence for the exact workflow version", async () => {
+  const queries: Array<{ sql: string; parameters?: unknown[] }> = [];
+  const store = new PostgresRunReceiptStore({
+    connect: async () => ({
+      query: async (sql: string, parameters?: unknown[]) => {
+        queries.push({ sql, parameters });
+        if (sql.startsWith("SELECT 1 FROM workflow_run_receipts")) return { rows: [{}] };
+        return { rows: [] };
+      },
+      release: () => undefined,
+    }),
+  } as unknown as Pool);
+
+  assert.equal(await store.hasVerifiedTestRun("a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", 2, user), true);
+  assert.deepEqual(
+    queries.find(({ sql }) => sql.startsWith("SELECT 1 FROM workflow_run_receipts"))?.parameters,
+    ["a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", 2],
+  );
+});
+
 test("loads only the newest bounded receipt history", async () => {
   const queries: string[] = [];
   const store = new PostgresRunReceiptStore({
