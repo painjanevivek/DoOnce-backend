@@ -51,6 +51,18 @@ class MemoryWorkflowStore implements WorkflowStore {
   public async listAuditEvents(workflowId: string): Promise<WorkflowAuditEvent[]> { return this.events.filter((event) => event.workflowId === workflowId); }
 }
 
+class MemoryTestEvidenceStore {
+  private readonly verified = new Set<string>();
+
+  public confirm(workflowId: string, version: number): void {
+    this.verified.add(`${workflowId}:${version}`);
+  }
+
+  public async hasVerifiedTestRun(workflowId: string, workflowVersion: number): Promise<boolean> {
+    return this.verified.has(`${workflowId}:${workflowVersion}`);
+  }
+}
+
 const owner: AuthenticatedUser = {
   tenantId: "b0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
   userId: "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
@@ -74,9 +86,11 @@ test("creates a tenant-bound draft without trusting client ownership fields", as
 
 test("publishes only a policy-safe draft", async () => {
   const store = new MemoryWorkflowStore();
-  const service = new WorkflowService(store);
+  const evidence = new MemoryTestEvidenceStore();
+  const service = new WorkflowService(store, evidence);
   const draft = await service.createDraft(owner, safeReportWorkflowFixture);
   await service.previewDraft(owner, draft.id);
+  evidence.confirm(draft.id, draft.version);
   const published = await service.publishDraft(owner, draft.id);
 
   assert.equal(published?.status, "active");
@@ -95,17 +109,25 @@ test("refuses to publish a draft with a reversible write", async () => {
   await assert.rejects(() => service.previewDraft(owner, draft.id), WorkflowInputError);
 });
 
-test("refuses publication until a policy preview passes", async () => {
-  const service = new WorkflowService(new MemoryWorkflowStore());
+test("refuses publication until a policy preview and completed test pass", async () => {
+  const store = new MemoryWorkflowStore();
+  const evidence = new MemoryTestEvidenceStore();
+  const service = new WorkflowService(store, evidence);
   const draft = await service.createDraft(owner, safeReportWorkflowFixture);
   await assert.rejects(() => service.publishDraft(owner, draft.id), WorkflowInputError);
+  await service.previewDraft(owner, draft.id);
+  await assert.rejects(() => service.publishDraft(owner, draft.id), WorkflowInputError);
+  evidence.confirm(draft.id, draft.version);
+  assert.equal((await service.publishDraft(owner, draft.id))?.status, "active");
 });
 
 test("lets only an owner disable an active workflow and records the event", async () => {
   const store = new MemoryWorkflowStore();
-  const service = new WorkflowService(store);
+  const evidence = new MemoryTestEvidenceStore();
+  const service = new WorkflowService(store, evidence);
   const draft = await service.createDraft(owner, safeReportWorkflowFixture);
   await service.previewDraft(owner, draft.id);
+  evidence.confirm(draft.id, draft.version);
   await service.publishDraft(owner, draft.id);
 
   assert.equal(await service.disableActive(owner, draft.id), 1);
@@ -116,9 +138,11 @@ test("lets only an owner disable an active workflow and records the event", asyn
 
 test("creates one reviewable next-version repair draft from the active workflow", async () => {
   const store = new MemoryWorkflowStore();
-  const service = new WorkflowService(store);
+  const evidence = new MemoryTestEvidenceStore();
+  const service = new WorkflowService(store, evidence);
   const draft = await service.createDraft(owner, safeReportWorkflowFixture);
   await service.previewDraft(owner, draft.id);
+  evidence.confirm(draft.id, draft.version);
   await service.publishDraft(owner, draft.id);
 
   const repair = await service.createRepairDraft(owner, draft.id);

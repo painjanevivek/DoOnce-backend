@@ -109,6 +109,10 @@ class ServerRunReceiptStore implements LocalDemoReceiptStore {
       }));
   }
 
+  public async hasVerifiedTestRun(workflowId: string, workflowVersion: number, user: AuthenticatedUser): Promise<boolean> {
+    return this.imports.some((item) => item.workflowId === workflowId && item.user.tenantId === user.tenantId && item.input.outcome === "completed" && workflowVersion === 1);
+  }
+
   public async importLocalDemoReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt> {
     this.imports.push({ workflowId, input, user });
     return {
@@ -123,6 +127,11 @@ class ServerRunReceiptStore implements LocalDemoReceiptStore {
       startedAt: "2026-08-05T00:00:00.000Z",
       finishedAt: "2026-08-05T00:00:00.000Z",
     };
+  }
+
+  public async importDraftTestReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt> {
+    if (input.outcome !== "completed" || input.pauseReason !== undefined) throw new Error("Draft tests require a completed receipt.");
+    return this.importLocalDemoReceipt(workflowId, input, user);
   }
 }
 
@@ -152,11 +161,12 @@ class ServerSupportReportStore implements SupportReportStore {
 }
 
 async function workflowApp(operationalControls?: OperationalControls, runReceiptStore?: LocalDemoReceiptStore, role: MembershipRole = "owner") {
+  const receipts = runReceiptStore ?? new ServerRunReceiptStore();
   return buildServer({
     authService: new AuthService(new ServerAuthStore(role), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
-    workflowService: new WorkflowService(new ServerWorkflowStore()),
+    workflowService: new WorkflowService(new ServerWorkflowStore(), receipts),
     ...(operationalControls ? { operationalControls } : {}),
-    ...(runReceiptStore ? { runReceiptStore } : {}),
+    runReceiptStore: receipts,
   });
 }
 
@@ -554,6 +564,30 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
   const preview = await app.inject({ method: "POST", url: `/api/v1/workflows/${response.json().workflow.id}/preview`, headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" } });
   assert.equal(preview.statusCode, 200);
   assert.equal(preview.json().preview, "policy-passed");
+
+  const publicationWithoutTest = await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${response.json().workflow.id}/publish`,
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+  });
+  assert.equal(publicationWithoutTest.statusCode, 400);
+
+  const pausedTest = await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${response.json().workflow.id}/test-receipts/import`,
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { sourceId: "b0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "paused", pauseReason: "changed-page" },
+  });
+  assert.equal(pausedTest.statusCode, 400);
+
+  const testReceipt = await app.inject({
+    method: "POST",
+    url: `/api/v1/workflows/${response.json().workflow.id}/test-receipts/import`,
+    headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
+    payload: { sourceId: "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "completed" },
+  });
+  assert.equal(testReceipt.statusCode, 201);
+  assert.equal(testReceipt.json().workflow.testRunVerified, true);
 
   const published = await app.inject({
     method: "POST",

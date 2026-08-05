@@ -25,6 +25,11 @@ export interface WorkflowReview {
   status: "draft" | "active";
   allowedDomains: string[];
   steps: WorkflowDraft["steps"];
+  testRunVerified: boolean;
+}
+
+export interface WorkflowTestEvidenceStore {
+  hasVerifiedTestRun(workflowId: string, workflowVersion: number, user: AuthenticatedUser): Promise<boolean>;
 }
 
 export interface WorkflowStore {
@@ -42,7 +47,7 @@ export class WorkflowInputError extends Error {}
 export class WorkflowAccessError extends Error {}
 
 export class WorkflowService {
-  public constructor(private readonly store: WorkflowStore) {}
+  public constructor(private readonly store: WorkflowStore, private readonly testEvidence?: WorkflowTestEvidenceStore) {}
 
   public async createDraft(user: AuthenticatedUser, input: unknown): Promise<WorkflowDraft> {
     requireWorkflowAuthor(user.role);
@@ -69,6 +74,9 @@ export class WorkflowService {
     const draft = await this.store.findDraft(workflowId, user);
     if (!draft) return undefined;
     if (!draft.policyPreviewedAt) throw new WorkflowInputError("Run the policy preview before publishing this draft.");
+    if (!this.testEvidence || !await this.testEvidence.hasVerifiedTestRun(draft.id, draft.version, user)) {
+      throw new WorkflowInputError("Confirm one completed local test receipt before publishing this draft.");
+    }
     const published = publishWorkflowDraft(draft, new Date().toISOString());
     if (!published.ok) throw new WorkflowInputError(published.errors.join(" "));
     await this.store.activate(published.value, user);
@@ -83,7 +91,7 @@ export class WorkflowService {
     if (!preview.ok) throw new WorkflowInputError(preview.errors.join(" "));
     const markedDraft = await this.store.markPolicyPreviewed(workflowId, user, previewedAt);
     if (!markedDraft) return undefined;
-    return { id: markedDraft.id, title: markedDraft.title, version: markedDraft.version, status: "draft", allowedDomains: markedDraft.allowedDomains, steps: markedDraft.steps };
+    return this.toReview(markedDraft, user);
   }
 
   public listAuditEvents(user: AuthenticatedUser, workflowId: string): Promise<WorkflowAuditEvent[]> {
@@ -99,13 +107,25 @@ export class WorkflowService {
     requireWorkflowAuthor(user.role);
     const draft = await this.store.createRepairDraft(workflowId, user);
     if (!draft) return undefined;
-    return { id: draft.id, title: draft.title, version: draft.version, status: "draft", allowedDomains: draft.allowedDomains, steps: draft.steps };
+    return this.toReview(draft, user);
   }
 
   public async reviewDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {
     const draft = await this.store.findDraft(workflowId, user);
     if (!draft) return undefined;
-    return { id: draft.id, title: draft.title, version: draft.version, status: "draft", allowedDomains: draft.allowedDomains, steps: draft.steps };
+    return this.toReview(draft, user);
+  }
+
+  private async toReview(draft: WorkflowDraft, user: AuthenticatedUser): Promise<WorkflowReview> {
+    return {
+      id: draft.id,
+      title: draft.title,
+      version: draft.version,
+      status: "draft",
+      allowedDomains: draft.allowedDomains,
+      steps: draft.steps,
+      testRunVerified: this.testEvidence ? await this.testEvidence.hasVerifiedTestRun(draft.id, draft.version, user) : false,
+    };
   }
 }
 

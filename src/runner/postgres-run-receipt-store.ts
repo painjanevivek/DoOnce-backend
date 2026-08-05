@@ -12,7 +12,9 @@ export interface LocalDemoReceiptImport {
 
 export interface LocalDemoReceiptStore {
   importLocalDemoReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt | undefined>;
+  importDraftTestReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt | undefined>;
   listLocalDemoReceipts(workflowId: string, user: AuthenticatedUser): Promise<RunReceipt[]>;
+  hasVerifiedTestRun(workflowId: string, workflowVersion: number, user: AuthenticatedUser): Promise<boolean>;
 }
 
 export class ReceiptAlreadyImportedError extends Error {
@@ -59,6 +61,21 @@ export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
     return this.list(workflowId, user);
   }
 
+  public async hasVerifiedTestRun(workflowId: string, workflowVersion: number, user: AuthenticatedUser): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const result = await transaction.query(
+          "SELECT 1 FROM workflow_run_receipts WHERE workflow_id = $1 AND workflow_version = $2 AND outcome = 'completed' LIMIT 1",
+          [workflowId, workflowVersion],
+        );
+        return result.rows.length === 1;
+      });
+    } finally {
+      client.release();
+    }
+  }
+
   public async importLocalDemoReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt | undefined> {
     const client = await this.pool.connect();
     try {
@@ -86,6 +103,44 @@ export class PostgresRunReceiptStore implements LocalDemoReceiptStore {
         await transaction.query(
           "INSERT INTO workflow_run_receipts (id, tenant_id, workflow_id, workflow_version, actor_id, outcome, pause_reason, step_outcomes, started_at, finished_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)",
           [receipt.id, receipt.tenantId, receipt.workflowId, receipt.workflowVersion, receipt.actorId, receipt.outcome, receipt.pauseReason ?? null, JSON.stringify(receipt.stepOutcomes), receipt.startedAt, receipt.finishedAt],
+        );
+        return receipt;
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new ReceiptAlreadyImportedError();
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async importDraftTestReceipt(workflowId: string, input: LocalDemoReceiptImport, user: AuthenticatedUser): Promise<RunReceipt | undefined> {
+    if (input.outcome !== "completed" || input.pauseReason !== undefined) return undefined;
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const draft = await transaction.query<{ version: number; definition: WorkflowDraft }>(
+          "SELECT version, definition FROM workflow_versions WHERE workflow_id = $1 AND status = 'draft' ORDER BY version DESC LIMIT 1",
+          [workflowId],
+        );
+        const workflow = draft.rows[0];
+        const validation = workflow && validateWorkflowDraft(workflow.definition);
+        if (!workflow || !validation?.ok || !isSupportedLocalDemo(validation.value)) return undefined;
+        const finishedAt = new Date().toISOString();
+        const receipt: RunReceipt = {
+          id: input.sourceId,
+          tenantId: user.tenantId,
+          workflowId,
+          workflowVersion: workflow.version,
+          actorId: user.userId,
+          outcome: "completed",
+          stepOutcomes: validation.value.steps.map((step) => ({ stepId: step.id, outcome: "verified" })),
+          startedAt: finishedAt,
+          finishedAt,
+        };
+        await transaction.query(
+          "INSERT INTO workflow_run_receipts (id, tenant_id, workflow_id, workflow_version, actor_id, outcome, pause_reason, step_outcomes, started_at, finished_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)",
+          [receipt.id, receipt.tenantId, receipt.workflowId, receipt.workflowVersion, receipt.actorId, receipt.outcome, null, JSON.stringify(receipt.stepOutcomes), receipt.startedAt, receipt.finishedAt],
         );
         return receipt;
       });

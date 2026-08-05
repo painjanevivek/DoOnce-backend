@@ -53,7 +53,8 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 
 - `GET /api/v1/workflows` lists workflows only within the authenticated tenant.
 - `POST /api/v1/workflows` creates a draft. The server assigns its ID, tenant and owner; browser input cannot choose them.
-- `POST /api/v1/workflows/:id/publish` permits only owner/builder roles and only when every step is currently policy-allowlisted. Reversible writes, approvals, submissions and unknown actions cannot be published.
+- `POST /api/v1/workflows/:id/publish` permits only owner/builder roles after both a server policy preview and one completed, tenant-scoped local test receipt exist for the exact draft version. Reversible writes, approvals, submissions and unknown actions cannot be published.
+- `POST /api/v1/workflows/:id/test-receipts/import` accepts only a completed local report-demo receipt for the current draft. It derives the tenant, draft version, actor, step IDs, and timestamps server-side; paused receipts cannot unlock publication.
 - `POST /api/v1/workflows/:id/disable` permits only an owner to immediately archive the active version. It remains available during the global workflow-change freeze and writes an immutable lifecycle event.
 - `POST /api/v1/workflows/:id/repair-draft` lets an owner or builder create one idempotent next-version repair draft from the latest active or disabled version. It copies only the already allowlisted definition, clears its policy-preview timestamp, and requires the normal review, preview, and publication flow before activation.
 - `GET /api/v1/workflows/:id/audit-events` returns the tenant-scoped, append-only workflow lifecycle events.

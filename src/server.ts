@@ -315,6 +315,39 @@ export async function buildServer(options: ServerOptions = {}) {
     return { health: summarizeRunHealth(await runReceipts.listLocalDemoReceipts(request.params.id, user), workflowVersion) };
   });
 
+  app.post<{ Params: { id: string }; Body: { sourceId?: unknown; outcome?: unknown; pauseReason?: unknown } }>("/api/v1/workflows/:id/test-receipts/import", {
+    schema: {
+      params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } },
+      body: {
+        type: "object",
+        required: ["sourceId", "outcome"],
+        additionalProperties: false,
+        properties: { sourceId: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" }, outcome: { type: "string", enum: ["completed", "paused"] }, pauseReason: { type: "string", enum: ["changed-page", "slow-network", "unknown"] } },
+      },
+    },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const workflows = options.workflowService;
+    const runReceipts = options.runReceiptStore;
+    if (!auth || !workflows || !runReceipts) return reply.code(503).send({ error: "Draft test verification is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    if (!canImportRunReceipts(user.role)) return reply.code(403).send({ error: "This role cannot confirm draft tests." });
+    const { sourceId, outcome, pauseReason } = request.body;
+    if (typeof sourceId !== "string" || outcome !== "completed" || pauseReason !== undefined) return reply.code(400).send({ error: "Only a completed local test receipt can unlock publication." });
+    try {
+      const receipt = await runReceipts.importDraftTestReceipt(request.params.id, { sourceId, outcome }, user);
+      if (!receipt) return reply.code(404).send({ error: "Draft workflow not found or unsupported for local testing." });
+      const workflow = await workflows.reviewDraft(user, request.params.id);
+      if (!workflow) return reply.code(409).send({ error: "Draft test was recorded, but the draft is no longer available for publication." });
+      return reply.code(201).send({ receipt: redactRunReceipt(receipt), workflow });
+    } catch (error) {
+      if (error instanceof ReceiptAlreadyImportedError) return reply.code(409).send({ error: "This receipt was already saved." });
+      throw error;
+    }
+  });
+
   app.post<{ Params: { id: string }; Body: { sourceId?: unknown; outcome?: unknown; pauseReason?: unknown } }>("/api/v1/workflows/:id/run-receipts/import", {
     schema: {
       params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } },

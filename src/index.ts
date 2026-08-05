@@ -19,10 +19,11 @@ const sessionSecret = process.env.SESSION_SECRET;
 if (databaseUrl && !sessionSecret) throw new Error("SESSION_SECRET is required when DATABASE_URL is configured.");
 
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefined;
+const runReceiptStore = pool && sessionSecret ? new PostgresRunReceiptStore(pool) : undefined;
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
-  ...(pool && sessionSecret ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool)) } : {}),
-  ...(pool && sessionSecret ? { runReceiptStore: new PostgresRunReceiptStore(pool) } : {}),
+  ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
+  ...(runReceiptStore ? { runReceiptStore } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (pool) app.addHook("onClose", async () => pool.end());
