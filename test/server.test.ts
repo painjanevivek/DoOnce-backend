@@ -54,6 +54,7 @@ class ServerWorkflowStore implements WorkflowStore {
     const draft = await this.findDraft(id);
     if (!draft) return undefined;
     draft.policyPreviewedAt = policyPreviewedAt;
+    this.events.push({ id: `${draft.id}-preview`, workflowId: draft.id, version: draft.version, eventType: "workflow.policy_previewed", createdAt: policyPreviewedAt });
     return draft;
   }
   public async activate(draft: PublishedWorkflowVersion): Promise<void> {
@@ -276,7 +277,7 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
     headers: { cookie: signedUp.headers["set-cookie"] ?? "" },
   });
   assert.equal(audit.statusCode, 200);
-  assert.deepEqual(audit.json().events.map((event: { eventType: string }) => event.eventType), ["workflow.draft_created", "workflow.published"]);
+  assert.deepEqual(audit.json().events.map((event: { eventType: string }) => event.eventType), ["workflow.draft_created", "workflow.policy_previewed", "workflow.published"]);
 });
 
 test("workflow mutations reject a request without an approved Origin", async (t) => {

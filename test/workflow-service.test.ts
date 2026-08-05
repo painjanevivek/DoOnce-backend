@@ -23,6 +23,7 @@ class MemoryWorkflowStore implements WorkflowStore {
     const draft = await this.findDraft(id, user);
     if (!draft) return undefined;
     draft.policyPreviewedAt = policyPreviewedAt;
+    this.events.push({ id: `${draft.id}-preview`, workflowId: draft.id, version: draft.version, eventType: "workflow.policy_previewed", createdAt: policyPreviewedAt });
     return draft;
   }
   public async activate(draft: PublishedWorkflowVersion): Promise<void> {
@@ -62,7 +63,7 @@ test("publishes only a policy-safe draft", async () => {
 
   assert.equal(published?.status, "active");
   assert.equal(store.active.length, 1);
-  assert.deepEqual(await service.listAuditEvents(owner, draft.id).then((events) => events.map((event) => event.eventType)), ["workflow.draft_created", "workflow.published"]);
+  assert.deepEqual(await service.listAuditEvents(owner, draft.id).then((events) => events.map((event) => event.eventType)), ["workflow.draft_created", "workflow.policy_previewed", "workflow.published"]);
 });
 
 test("refuses to publish a draft with a reversible write", async () => {

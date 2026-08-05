@@ -14,7 +14,7 @@ export interface WorkflowAuditEvent {
   id: string;
   workflowId: string;
   version: number;
-  eventType: "workflow.draft_created" | "workflow.published";
+  eventType: "workflow.draft_created" | "workflow.policy_previewed" | "workflow.published";
   createdAt: string;
 }
 

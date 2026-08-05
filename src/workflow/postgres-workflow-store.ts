@@ -69,6 +69,10 @@ export class PostgresWorkflowStore implements WorkflowStore {
         );
         const validation = validateWorkflowDraft(result.rows[0]?.definition);
         if (!validation.ok || validation.value.tenantId !== user.tenantId) return undefined;
+        await transaction.query(
+          "INSERT INTO workflow_audit_events (tenant_id, workflow_id, workflow_version, actor_id, event_type, metadata) VALUES ($1, $2, $3, $4, 'workflow.policy_previewed', '{}'::jsonb)",
+          [validation.value.tenantId, validation.value.id, validation.value.version, user.userId],
+        );
         return validation.value;
       });
     } finally {
