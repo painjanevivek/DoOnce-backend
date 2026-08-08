@@ -86,6 +86,7 @@ export class WorkflowService {
   }
 
   public async previewDraft(user: AuthenticatedUser, workflowId: string): Promise<WorkflowReview | undefined> {
+    requireWorkflowAuthor(user.role);
     const draft = await this.store.findDraft(workflowId, user);
     if (!draft) return undefined;
     const previewedAt = new Date().toISOString();

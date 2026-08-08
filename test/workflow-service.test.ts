@@ -121,6 +121,17 @@ test("refuses publication until a policy preview and completed test pass", async
   assert.equal((await service.publishDraft(owner, draft.id))?.status, "active");
 });
 
+test("requires an author role to record a policy preview", async () => {
+  const store = new MemoryWorkflowStore();
+  const service = new WorkflowService(store);
+  const draft = await service.createDraft(owner, safeReportWorkflowFixture);
+
+  for (const role of ["runner", "reviewer"] as const) {
+    await assert.rejects(() => service.previewDraft({ ...owner, role }, draft.id), WorkflowAccessError);
+  }
+  assert.deepEqual(store.events.map((event) => event.eventType), ["workflow.draft_created"]);
+});
+
 test("returns only derived publication prerequisites when reviewing a saved draft", async () => {
   const store = new MemoryWorkflowStore();
   const evidence = new MemoryTestEvidenceStore();

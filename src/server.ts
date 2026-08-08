@@ -511,6 +511,7 @@ export async function buildServer(options: ServerOptions = {}) {
       if (!workflow) return reply.code(404).send({ error: "Workflow not found." });
       return { workflow, preview: "policy-passed" };
     } catch (error) {
+      if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot record policy previews." });
       if (error instanceof WorkflowInputError) return reply.code(400).send({ error: "Workflow cannot pass the current safety policy." });
       throw error;
     }

@@ -439,6 +439,19 @@ test("allows runners but denies reviewers from saving a run receipt", async (t) 
   assert.equal(reviewerReceipts.imports.length, 0);
 });
 
+test("denies runners and reviewers from recording policy previews", async (t) => {
+  const runnerApp = await workflowApp(undefined, undefined, "runner");
+  const reviewerApp = await workflowApp(undefined, undefined, "reviewer");
+  t.after(async () => Promise.all([runnerApp.close(), reviewerApp.close()]));
+  const signup = { method: "POST" as const, url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "role-preview@example.com", password: "correct-horse-battery-staple", tenantName: "Role preview" } };
+  const runner = await runnerApp.inject(signup);
+  const reviewer = await reviewerApp.inject(signup);
+  const request = (cookie: string | undefined) => ({ method: "POST" as const, url: "/api/v1/workflows/a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b/preview", headers: { origin: "http://localhost:3000", cookie: cookie ?? "" } });
+
+  assert.equal((await runnerApp.inject(request(runner.headers["set-cookie"]))).statusCode, 403);
+  assert.equal((await reviewerApp.inject(request(reviewer.headers["set-cookie"]))).statusCode, 403);
+});
+
 test("lists tenant-scoped run receipt history for an authenticated dashboard session", async (t) => {
   const receipts = new ServerRunReceiptStore();
   const app = await workflowApp(undefined, receipts);
