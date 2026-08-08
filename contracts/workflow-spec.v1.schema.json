@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://doonce.dev/schemas/workflow-spec.v1.schema.json",
+  "title": "DoOnce WorkflowSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "title", "allowedDomains", "inputs", "steps"],
+  "properties": {
+    "format": { "const": "doonce.workflow-spec.v1" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "allowedDomains": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/domain" }
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/input" }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "domain": {
+      "anyOf": [
+        { "enum": ["localhost", "127.0.0.1"] },
+        { "type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$" }
+      ]
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "label", "kind", "required"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kind": { "enum": ["text", "date", "select"] },
+        "required": { "type": "boolean" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "path"],
+      "properties": {
+        "domain": { "$ref": "#/$defs/domain" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^/(?!/)(?!.*\\.\\.).*$" },
+        "selector": {
+          "type": "string",
+          "anyOf": [
+            { "pattern": "^#[a-zA-Z][a-zA-Z0-9_-]{0,63}$" },
+            { "pattern": "^\\[data-doonce-capture-id=\\\"[a-z0-9-]{1,64}\\\"\\]$" }
+          ]
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "name", "expectedOutcome", "target"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "action": { "enum": ["navigate", "wait", "read", "select", "type", "download", "compare", "ask-approval", "stop"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "expectedOutcome": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "target": { "$ref": "#/$defs/target" },
+        "inputName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "enum": ["read", "select", "type", "download", "compare"] } }, "required": ["action"] },
+          "then": { "properties": { "target": { "required": ["selector"] } } }
+        },
+        {
+          "if": { "properties": { "action": { "enum": ["select", "type"] } }, "required": ["action"] },
+          "then": { "required": ["inputName"] },
+          "else": { "not": { "required": ["inputName"] } }
+        }
+      ]
+    }
+  }
+}
