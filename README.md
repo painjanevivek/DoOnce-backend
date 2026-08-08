@@ -1,12 +1,12 @@
 # DoOnce backend
 
-The DoOnce backend owns workflow validation, deterministic safety policy, tenant-scoped APIs, receipts and scheduling. It never receives browser passwords, OTPs, payment details or raw page content by default.
+The DoOnce backend stores versioned browser workflows, validates workflow contracts, coordinates tenant-scoped lifecycle operations, and records test/run evidence. It is the API foundation for recording-to-workflow compilation, deterministic execution, verification, repair, and scheduling.
 
-## Phase 1 foundation
+## Current alpha foundation
 
-This first iteration exposes a local-only API with a typed workflow validator, policy evaluator, immutable read-only workflow publication, and database-backed account sessions. It does not execute browser steps.
+The current iteration exposes a local API with typed workflow validation, immutable workflow publication, lifecycle events, redacted run receipts, and database-backed account sessions. It does not yet execute general WorkflowSpec steps.
 
-### Safety boundary
+### Current capability boundary
 
 - Read-only actions can be allowed.
 - Reversible writes require an explicit approval checkpoint.
