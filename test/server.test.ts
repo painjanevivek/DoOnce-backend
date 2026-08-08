@@ -277,6 +277,7 @@ test("auth me requires a valid session cookie", async (t) => {
   });
   assert.equal(unauthorized.statusCode, 401);
   assert.equal(authorized.statusCode, 200);
+  assert.equal(authorized.headers["cache-control"], "no-store");
   assert.equal(authorized.json().user.email, "owner@example.com");
 });
 

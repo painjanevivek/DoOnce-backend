@@ -79,6 +79,9 @@ export async function buildServer(options: ServerOptions = {}) {
   });
   await app.register(cookie);
   await app.register(rateLimit, { global: false, max: 100, timeWindow: "1 minute" });
+  app.addHook("onSend", async (request, reply) => {
+    if (request.url.startsWith("/api/")) reply.header("cache-control", "no-store");
+  });
   app.setErrorHandler((error: FastifyError, request, reply) => {
     request.log.error({
       error: {
