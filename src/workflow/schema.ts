@@ -1,7 +1,7 @@
 import {
   executableActionKinds,
   type ExecutableActionKind,
-} from "../policy/action-policy.js";
+} from "../execution/action-capabilities.js";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const domainPattern = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
@@ -62,7 +62,7 @@ export function validateWorkflowDraft(input: unknown): WorkflowValidationResult 
   if (!isUuid(input.tenantId)) errors.push("Workflow tenantId must be a UUID.");
   if (!isUuid(input.ownerId)) errors.push("Workflow ownerId must be a UUID.");
   if (!isNonEmptyString(input.title, 120)) errors.push("Workflow title is required and must be at most 120 characters.");
-  if (input.policyPreviewedAt !== undefined && (typeof input.policyPreviewedAt !== "string" || Number.isNaN(Date.parse(input.policyPreviewedAt)))) errors.push("Workflow policy preview timestamp must be valid.");
+  if (input.policyPreviewedAt !== undefined && (typeof input.policyPreviewedAt !== "string" || Number.isNaN(Date.parse(input.policyPreviewedAt)))) errors.push("Workflow capability preview timestamp must be valid.");
 
   const allowedDomains = input.allowedDomains;
   if (!Array.isArray(allowedDomains) || allowedDomains.length === 0 || allowedDomains.some((domain) => !isValidDomain(domain))) {
@@ -93,5 +93,5 @@ function validateStep(step: unknown, index: number, allowedDomains: unknown, err
   if (!isValidDomain(step.domain) || !Array.isArray(allowedDomains) || !allowedDomains.includes(step.domain)) {
     errors.push(`Step ${index + 1} domain must be in the workflow allowlist.`);
   }
-  if (!isValidPath(step.path)) errors.push(`Step ${index + 1} path must be a safe relative path.`);
+  if (!isValidPath(step.path)) errors.push(`Step ${index + 1} path must be a normalized relative path.`);
 }

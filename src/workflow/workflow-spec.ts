@@ -1,4 +1,4 @@
-import { evaluateActionPolicy } from "../policy/action-policy.js";
+import { evaluateActionCapabilities } from "../execution/action-capabilities.js";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const domainPattern = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
@@ -114,7 +114,7 @@ function validateStep(step: unknown, index: number, allowedDomains: unknown, inp
   if (!usesInput && step.inputName !== undefined) errors.push(`Step ${index + 1} cannot include an input reference.`);
 
   if (workflowSpecActionKinds.includes(step.action as WorkflowSpecActionKind)) {
-    const decision = evaluateActionPolicy({ action: step.action as WorkflowSpecActionKind });
+    const decision = evaluateActionCapabilities({ action: step.action as WorkflowSpecActionKind });
     if (decision.verdict === "blocked") errors.push(`Step ${index + 1} is blocked by ${decision.ruleId}.`);
   }
 }

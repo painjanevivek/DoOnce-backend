@@ -11,12 +11,12 @@ import type { RunReceipt } from "./runner/run-receipt.js";
 import { operationalControlsFromEnvironment, type OperationalControls } from "./system/operational-controls.js";
 import { supportReportCategories, type SupportDiagnostic, type SupportReportCategory, type SupportReportStore } from "./support/postgres-support-report-store.js";
 import {
-  evaluateActionPolicy,
+  evaluateActionCapabilities,
   isActionKind,
   isSensitiveFieldKind,
   type ActionKind,
   type SensitiveFieldKind,
-} from "./policy/action-policy.js";
+} from "./execution/action-capabilities.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -99,16 +99,26 @@ export async function buildServer(options: ServerOptions = {}) {
 
   app.get("/health", async () => ({ status: "ok", service: "doonce-api" }));
 
-  app.get("/api/v1/system/safety", async () => ({
+  const capabilitiesSummary = () => ({
     public: true,
-    message: "This endpoint describes policy only. It cannot execute or store workflows.",
+    message: "This endpoint describes the actions available to the current workflow runtime.",
     blocked: ["submit", "delete", "payment", "credential", "otp"],
     paused: ["unknown"],
     workflowChangesEnabled: operationalControls.workflowChangesEnabled,
     killSwitchActive: operationalControls.killSwitchActive,
-  }));
+  });
 
-  app.post<{ Body: { action?: unknown; fieldKind?: unknown } }>("/api/v1/policy/evaluate", {
+  app.get("/api/v1/system/capabilities", async () => capabilitiesSummary());
+
+  app.get("/api/v1/system/safety", async (_request, reply) => {
+    reply
+      .header("deprecation", "true")
+      .header("sunset", "Sun, 31 Jan 2027 00:00:00 GMT")
+      .header("link", '</api/v1/system/capabilities>; rel="successor-version"');
+    return capabilitiesSummary();
+  });
+
+  const actionEvaluationSchema = {
     schema: {
       body: {
         type: "object",
@@ -120,15 +130,33 @@ export async function buildServer(options: ServerOptions = {}) {
         },
       },
     },
-  }, async (request, reply) => {
+  } as const;
+
+  app.post<{ Body: { action?: unknown; fieldKind?: unknown } }>("/api/v1/capabilities/evaluate", actionEvaluationSchema, async (request, reply) => {
     const { action, fieldKind } = request.body;
     if (!isActionKind(action) || (fieldKind !== undefined && !isSensitiveFieldKind(fieldKind))) {
-      return reply.code(400).send({ error: "Invalid policy evaluation input." });
+      return reply.code(400).send({ error: "Invalid capability evaluation input.", code: "capabilities.invalid_input" });
     }
-    return evaluateActionPolicy({
+    return evaluateActionCapabilities({
       action: action as ActionKind,
       ...(fieldKind === undefined ? {} : { fieldKind: fieldKind as SensitiveFieldKind }),
     });
+  });
+
+  app.post<{ Body: { action?: unknown; fieldKind?: unknown } }>("/api/v1/policy/evaluate", actionEvaluationSchema, async (request, reply) => {
+    reply
+      .header("deprecation", "true")
+      .header("sunset", "Sun, 31 Jan 2027 00:00:00 GMT")
+      .header("link", '</api/v1/capabilities/evaluate>; rel="successor-version"');
+    const { action, fieldKind } = request.body;
+    if (!isActionKind(action) || (fieldKind !== undefined && !isSensitiveFieldKind(fieldKind))) {
+      return reply.code(400).send({ error: "Invalid capability evaluation input.", code: "capabilities.invalid_input" });
+    }
+    const decision = evaluateActionCapabilities({
+      action: action as ActionKind,
+      ...(fieldKind === undefined ? {} : { fieldKind: fieldKind as SensitiveFieldKind }),
+    });
+    return { ...decision, ruleId: decision.ruleId.replace(/^capability\./, "policy.") };
   });
 
   app.post<{ Body: { email?: unknown; password?: unknown; tenantName?: unknown } }>("/api/v1/auth/sign-up", {
@@ -428,7 +456,7 @@ export async function buildServer(options: ServerOptions = {}) {
       return reply.code(201).send({ workflow: draft });
     } catch (error) {
       if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot create workflows." });
-      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: "Workflow does not meet the safety requirements." });
+      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow.validation_failed" });
       throw error;
     }
   });
@@ -456,7 +484,7 @@ export async function buildServer(options: ServerOptions = {}) {
       return { workflow };
     } catch (error) {
       if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot publish workflows." });
-      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: "Workflow cannot be published under the current safety policy." });
+      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow.publication_blocked" });
       throw error;
     }
   });
@@ -493,7 +521,7 @@ export async function buildServer(options: ServerOptions = {}) {
     try {
       const workflow = await workflows.createRepairDraft(user, request.params.id);
       if (!workflow) return reply.code(404).send({ error: "Published workflow not found." });
-      return reply.code(201).send({ workflow, repair: "reconfirm-safe-step" });
+      return reply.code(201).send({ workflow, repair: "reconfirm-step" });
     } catch (error) {
       if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot repair workflows." });
       throw error;
@@ -513,10 +541,10 @@ export async function buildServer(options: ServerOptions = {}) {
     try {
       const workflow = await workflows.previewDraft(user, request.params.id);
       if (!workflow) return reply.code(404).send({ error: "Workflow not found." });
-      return { workflow, preview: "policy-passed" };
+      return { workflow, preview: "capabilities-passed" };
     } catch (error) {
-      if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot record policy previews." });
-      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: "Workflow cannot pass the current safety policy." });
+      if (error instanceof WorkflowAccessError) return reply.code(403).send({ error: "This role cannot record capability previews." });
+      if (error instanceof WorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow.capability_check_failed" });
       throw error;
     }
   });

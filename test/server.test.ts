@@ -210,13 +210,13 @@ test("unexpected API errors do not disclose internal details", async (t) => {
   assert.doesNotMatch(response.body, /password|database/i);
 });
 
-test("policy API blocks a prohibited action", async (t) => {
+test("capabilities API reports an unsupported action", async (t) => {
   const app = await buildServer();
   t.after(async () => app.close());
 
   const response = await app.inject({
     method: "POST",
-    url: "/api/v1/policy/evaluate",
+    url: "/api/v1/capabilities/evaluate",
     payload: { action: "payment" },
   });
 
@@ -224,22 +224,41 @@ test("policy API blocks a prohibited action", async (t) => {
   assert.deepEqual(response.json(), {
     verdict: "blocked",
     risk: "irreversible",
-    ruleId: "policy.prohibited-action",
-    reason: "Submission, deletion, financial and credential actions are prohibited in version 1.",
+    ruleId: "capability.prohibited-action",
+    reason: "Submission, deletion, financial and credential actions are not supported in version 1.",
   });
 });
 
-test("policy API rejects unknown request fields", async (t) => {
+test("capabilities API rejects unknown request fields", async (t) => {
   const app = await buildServer();
   t.after(async () => app.close());
 
   const response = await app.inject({
     method: "POST",
-    url: "/api/v1/policy/evaluate",
+    url: "/api/v1/capabilities/evaluate",
     payload: { action: "read", unexpected: "value" },
   });
 
   assert.equal(response.statusCode, 400);
+});
+
+test("legacy capability routes stay compatible and advertise their replacement", async (t) => {
+  const app = await buildServer();
+  t.after(async () => app.close());
+
+  const system = await app.inject({ method: "GET", url: "/api/v1/system/safety" });
+  const evaluation = await app.inject({
+    method: "POST",
+    url: "/api/v1/policy/evaluate",
+    payload: { action: "type" },
+  });
+
+  assert.equal(system.statusCode, 200);
+  assert.equal(system.headers.deprecation, "true");
+  assert.match(system.headers.link ?? "", /system\/capabilities/);
+  assert.equal(evaluation.statusCode, 200);
+  assert.equal(evaluation.headers.deprecation, "true");
+  assert.equal(evaluation.json().ruleId, "policy.reversible-write");
 });
 
 test("auth sign-up sends an HttpOnly session cookie and exposes no password material", async (t) => {
@@ -578,7 +597,8 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
 
   const preview = await app.inject({ method: "POST", url: `/api/v1/workflows/${response.json().workflow.id}/preview`, headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" } });
   assert.equal(preview.statusCode, 200);
-  assert.equal(preview.json().preview, "policy-passed");
+  assert.equal(preview.json().preview, "capabilities-passed");
+  assert.equal(preview.json().workflow.capabilitiesPreviewed, true);
   assert.equal(preview.json().workflow.policyPreviewed, true);
 
   const publicationWithoutTest = await app.inject({
@@ -643,7 +663,7 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
   });
   assert.equal(repair.statusCode, 201);
   assert.equal(repair.json().workflow.version, 2);
-  assert.equal(repair.json().repair, "reconfirm-safe-step");
+  assert.equal(repair.json().repair, "reconfirm-step");
 
   const repairAudit = await app.inject({
     method: "GET",
@@ -660,10 +680,10 @@ test("workflow mutations reject a request without an approved Origin", async (t)
   assert.equal(response.statusCode, 403);
 });
 
-test("kill switch blocks workflow mutations and is visible in public safety status", async (t) => {
+test("operational controls block workflow mutations and remain visible in capabilities", async (t) => {
   const app = await workflowApp({ workflowChangesEnabled: false, killSwitchActive: true });
   t.after(async () => app.close());
-  const safety = await app.inject({ method: "GET", url: "/api/v1/system/safety" });
+  const capabilities = await app.inject({ method: "GET", url: "/api/v1/system/capabilities" });
   const mutation = await app.inject({
     method: "POST",
     url: "/api/v1/workflows",
@@ -676,8 +696,8 @@ test("kill switch blocks workflow mutations and is visible in public safety stat
     headers: { origin: "http://localhost:3000" },
   });
 
-  assert.equal(safety.json().workflowChangesEnabled, false);
-  assert.equal(safety.json().killSwitchActive, true);
+  assert.equal(capabilities.json().workflowChangesEnabled, false);
+  assert.equal(capabilities.json().killSwitchActive, true);
   assert.equal(mutation.statusCode, 503);
   assert.equal(preview.statusCode, 503);
 });

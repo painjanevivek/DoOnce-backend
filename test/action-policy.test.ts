@@ -1,32 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { evaluateActionCapabilities } from "../src/execution/action-capabilities.js";
 import { evaluateActionPolicy } from "../src/policy/action-policy.js";
 
 test("allows read-only report downloads", () => {
-  const decision = evaluateActionPolicy({ action: "download" });
+  const decision = evaluateActionCapabilities({ action: "download" });
   assert.equal(decision.verdict, "allow");
   assert.equal(decision.risk, "read-only");
 });
 
 test("requires approval for a reversible form write", () => {
-  const decision = evaluateActionPolicy({ action: "type" });
+  const decision = evaluateActionCapabilities({ action: "type" });
   assert.equal(decision.verdict, "needs-approval");
-  assert.equal(decision.ruleId, "policy.reversible-write");
+  assert.equal(decision.ruleId, "capability.reversible-write");
 });
 
 test("blocks sensitive input even when the action would otherwise be reversible", () => {
-  const decision = evaluateActionPolicy({ action: "type", fieldKind: "password" });
+  const decision = evaluateActionCapabilities({ action: "type", fieldKind: "password" });
   assert.equal(decision.verdict, "blocked");
-  assert.equal(decision.ruleId, "policy.sensitive-input");
+  assert.equal(decision.ruleId, "capability.sensitive-input");
 });
 
 test("pauses unknown actions instead of guessing", () => {
-  const decision = evaluateActionPolicy({ action: "unknown" });
+  const decision = evaluateActionCapabilities({ action: "unknown" });
   assert.equal(decision.verdict, "paused");
 });
 
 test("blocks irreversible and financial actions", () => {
   for (const action of ["submit", "delete", "payment"] as const) {
-    assert.equal(evaluateActionPolicy({ action }).verdict, "blocked");
+    assert.equal(evaluateActionCapabilities({ action }).verdict, "blocked");
   }
+});
+
+test("keeps the deprecated action policy adapter stable during migration", () => {
+  assert.equal(evaluateActionPolicy({ action: "type" }).ruleId, "policy.reversible-write");
 });

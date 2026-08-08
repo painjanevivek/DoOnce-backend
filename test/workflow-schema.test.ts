@@ -22,7 +22,7 @@ test("rejects a workflow path traversal attempt", () => {
     steps: [{ ...safeReportWorkflowFixture.steps[0], path: "/reports/../secrets" }],
   });
   assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.errors.join(" "), /safe relative path/);
+  if (!result.ok) assert.match(result.errors.join(" "), /normalized relative path/);
 });
 
 test("accepts the explicit local demo domains and no other bare hostname", () => {

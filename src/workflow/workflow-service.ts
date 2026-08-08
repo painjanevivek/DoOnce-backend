@@ -26,6 +26,8 @@ export interface WorkflowReview {
   status: "draft" | "active";
   allowedDomains: string[];
   steps: WorkflowDraft["steps"];
+  capabilitiesPreviewed: boolean;
+  /** @deprecated Remove after the v1 dashboard migration window. */
   policyPreviewed: boolean;
   testRunVerified: boolean;
 }
@@ -75,7 +77,7 @@ export class WorkflowService {
     requireWorkflowAuthor(user.role);
     const draft = await this.store.findDraft(workflowId, user);
     if (!draft) return undefined;
-    if (!draft.policyPreviewedAt) throw new WorkflowInputError("Run the policy preview before publishing this draft.");
+    if (!draft.policyPreviewedAt) throw new WorkflowInputError("Run the capability preview before publishing this draft.");
     if (!this.testEvidence || !await this.testEvidence.hasVerifiedTestRun(draft.id, draft.version, user)) {
       throw new WorkflowInputError("Confirm one completed local test receipt before publishing this draft.");
     }
@@ -127,6 +129,7 @@ export class WorkflowService {
       status: "draft",
       allowedDomains: draft.allowedDomains,
       steps: draft.steps,
+      capabilitiesPreviewed: draft.policyPreviewedAt !== undefined,
       policyPreviewed: draft.policyPreviewedAt !== undefined,
       testRunVerified: this.testEvidence ? await this.testEvidence.hasVerifiedTestRun(draft.id, draft.version, user) : false,
     };

@@ -1,4 +1,4 @@
-import { evaluateActionPolicy } from "../policy/action-policy.js";
+import { evaluateActionCapabilities } from "../execution/action-capabilities.js";
 import {
   validateWorkflowDraft,
   type WorkflowDraft,
@@ -20,13 +20,13 @@ export function publishWorkflowDraft(input: unknown, publishedAt: string): Publi
   const validation = validateWorkflowDraft(input);
   if (!validation.ok) return validation;
 
-  const policyErrors = validation.value.steps.flatMap((step, index) => {
-    const decision = evaluateActionPolicy({ action: step.kind });
+  const capabilityErrors = validation.value.steps.flatMap((step, index) => {
+    const decision = evaluateActionCapabilities({ action: step.kind });
     return decision.verdict === "allow"
       ? []
       : [`Step ${index + 1} cannot be published yet: ${decision.reason}`];
   });
-  if (policyErrors.length > 0) return { ok: false, errors: policyErrors };
+  if (capabilityErrors.length > 0) return { ok: false, errors: capabilityErrors };
 
   return {
     ok: true,

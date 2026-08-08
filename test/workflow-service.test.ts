@@ -145,6 +145,7 @@ test("returns only derived publication prerequisites when reviewing a saved draf
     status: "draft",
     allowedDomains: draft.allowedDomains,
     steps: draft.steps,
+    capabilitiesPreviewed: false,
     policyPreviewed: false,
     testRunVerified: false,
   });
@@ -152,6 +153,7 @@ test("returns only derived publication prerequisites when reviewing a saved draf
   await service.previewDraft(owner, draft.id);
   evidence.confirm(draft.id, draft.version);
   const reviewed = await service.reviewDraft(owner, draft.id);
+  assert.equal(reviewed?.capabilitiesPreviewed, true);
   assert.equal(reviewed?.policyPreviewed, true);
   assert.equal(reviewed?.testRunVerified, true);
   assert.equal("policyPreviewedAt" in (reviewed ?? {}), false);

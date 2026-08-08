@@ -2,9 +2,10 @@
   "name": "doonce-backend",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@11.6.2",
   "type": "module",
   "engines": {
-    "node": ">=20.9"
+    "node": "24.12.x"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
