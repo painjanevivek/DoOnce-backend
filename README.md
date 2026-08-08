@@ -91,7 +91,7 @@ Unexpected API failures return a generic client-safe error. Structured server lo
 
 ## Pre-launch policy drafts
 
-Internal drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). They are intentionally marked for legal review and must not be published until the company, jurisdiction, and data-processing placeholders are approved.
+Internal source drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). The frontend may show matching, clearly labelled pre-launch summaries at `/privacy` and `/terms`; they are not final notices or contractual terms. Final policies cannot be published until the company, jurisdiction, and data-processing placeholders are approved.
 
 ### Operational controls
 
