@@ -37,6 +37,9 @@ export interface AuthStore {
 export class AuthInputError extends Error {}
 export class EmailAlreadyRegisteredError extends Error {}
 
+// Keep password derivation work consistent when an email has no account.
+const timingSafePasswordHash = "scrypt$AAAAAAAAAAAAAAAAAAAAAA$a2FeeCuNRftgLaVKtBhJOzVe8dkMB42q3F3gym78p0Ju8mNMHJlsE6x_1apNcyEl4wQg3kyKlHnmYRpoElQjCw";
+
 export class AuthService {
   public constructor(
     private readonly store: AuthStore,
@@ -76,7 +79,8 @@ export class AuthService {
     const email = validateEmail(input.email);
     if (typeof input.password !== "string") throw new AuthInputError("Password is required.");
     const account = await this.store.findAccountByEmail(email);
-    if (!account || !account.defaultTenantId || !await verifyPassword(input.password, account.passwordHash)) return undefined;
+    const passwordMatches = await verifyPassword(input.password, account?.passwordHash ?? timingSafePasswordHash);
+    if (!account || !account.defaultTenantId || !passwordMatches) return undefined;
 
     const identity = { tenantId: account.defaultTenantId, userId: account.userId };
     const role = await this.store.findRole(identity);

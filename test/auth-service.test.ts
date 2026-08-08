@@ -85,5 +85,7 @@ test("invalidates a session after sign out", async () => {
 
 test("does not reveal whether a sign-in email exists", async () => {
   const service = new AuthService(new MemoryAuthStore(), sessionSecret);
+  await service.signUp({ email: "owner@example.com", password: "not-a-real-password", tenantName: "DoOnce demo" });
   assert.equal(await service.signIn({ email: "missing@example.com", password: "not-a-real-password" }), undefined);
+  assert.equal(await service.signIn({ email: "owner@example.com", password: "wrong-password-value" }), undefined);
 });
