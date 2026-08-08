@@ -2,6 +2,8 @@
 
 The backend owns versioned, language-neutral contracts used by the dashboard, extension, and future executors.
 
-`workflow-spec.v1.schema.json` is the canonical WorkflowSpec v1 schema. Its matching server validator rejects unknown fields, literal values, undeclared inputs, unapproved domains, and unstable selectors before a workflow can be accepted for authoring or execution.
+`protocol.v1.schema.json` is the canonical source for WorkflowSpec, locator, capture, runtime, run-result, repair, extension-message, and API-error contracts. `workflow-spec.v1.schema.json` is a compatibility reference into that protocol, not a second definition.
 
-This contract is not yet persisted as a general workflow definition. The current report-download template remains the supported product slice until the capture compiler and editor consume this contract.
+`src/contracts/protocol.ts` is the matching generated TypeScript surface. `manifest.json` pins both artifacts by SHA-256; `npm run contracts:verify` prevents edited or stale generated files from entering a build.
+
+Canonical drafts are validated before storage and after loading. The current report-download slice is represented by an ordinary `download` step with a locator, so executors and clients do not need a report-specific branch.

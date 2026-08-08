@@ -2,9 +2,11 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import swagger from "@fastify/swagger";
 import Fastify, { type FastifyError } from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
+import { CanonicalWorkflowAccessError, CanonicalWorkflowInputError, CanonicalWorkflowService } from "./workflow/canonical-workflow-service.js";
 import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
 import { summarizeRunHealth } from "./runner/run-health.js";
 import type { RunReceipt } from "./runner/run-receipt.js";
@@ -29,6 +31,7 @@ function allowedOriginsFromEnvironment(): string[] {
 export interface ServerOptions {
   authService?: AuthService;
   workflowService?: WorkflowService;
+  canonicalWorkflowService?: CanonicalWorkflowService;
   runReceiptStore?: LocalDemoReceiptStore;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
@@ -50,6 +53,16 @@ export async function buildServer(options: ServerOptions = {}) {
     },
     trustProxy: false,
   });
+
+  if (process.env.NODE_ENV !== "production") {
+    await app.register(swagger, {
+      openapi: {
+        openapi: "3.1.0",
+        info: { title: "DoOnce API", version: "1.0.0", description: "Versioned workflow authoring and execution API." },
+        servers: [{ url: "http://127.0.0.1:4000", description: "Local development" }],
+      },
+    });
+  }
 
   await app.register(helmet, {
     global: true,
@@ -98,6 +111,10 @@ export async function buildServer(options: ServerOptions = {}) {
   });
 
   app.get("/health", async () => ({ status: "ok", service: "doonce-api" }));
+
+  if (process.env.NODE_ENV !== "production") {
+    app.get("/api/v1/openapi.json", { schema: { hide: true } }, async () => app.swagger());
+  }
 
   const capabilitiesSummary = () => ({
     public: true,
@@ -263,6 +280,42 @@ export async function buildServer(options: ServerOptions = {}) {
     }
     const report = await supportReports.submit(category as SupportReportCategory, user, diagnostic);
     return reply.code(201).send({ report });
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/workflow-specs", {
+    schema: { body: { type: "object" } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return reply.code(201).send({ workflow: await workflows.createDraft(user, request.body) });
+    } catch (error) {
+      if (error instanceof CanonicalWorkflowAccessError) return reply.code(403).send({ error: error.message, code: "workflow.access_denied" });
+      if (error instanceof CanonicalWorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow_spec.validation_failed" });
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/v1/workflow-specs/:id", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const workflow = await workflows.findDraft(user, request.params.id);
+      return workflow ? { workflow } : reply.code(404).send({ error: "WorkflowSpec draft not found." });
+    } catch (error) {
+      if (error instanceof CanonicalWorkflowInputError) return reply.code(500).send({ error: "Stored workflow data is invalid." });
+      throw error;
+    }
   });
 
   app.get("/api/v1/workflows", async (request, reply) => {

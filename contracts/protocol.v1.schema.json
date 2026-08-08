@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://doonce.dev/schemas/protocol.v1.schema.json",
+  "title": "DoOnce protocol contracts v1",
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "domain": {
+      "anyOf": [
+        { "enum": ["localhost", "127.0.0.1"] },
+        { "type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,}$" }
+      ]
+    },
+    "relativePath": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^/(?!/)(?!.*\\.\\.).*$" },
+    "LocatorCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "value", "confidence"],
+      "properties": {
+        "strategy": { "enum": ["id", "capture-id", "role", "label", "text"] },
+        "value": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "LocatorSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "primary", "fallbacks"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "primary": { "$ref": "#/$defs/LocatorCandidate" },
+        "fallbacks": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/LocatorCandidate" } }
+      }
+    },
+    "PageTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "path"],
+      "properties": {
+        "domain": { "$ref": "#/$defs/domain" },
+        "path": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+    "ElementTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "path", "locator"],
+      "properties": {
+        "domain": { "$ref": "#/$defs/domain" },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "locator": { "$ref": "#/$defs/LocatorSpec" }
+      }
+    },
+    "WorkflowInputDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "label", "kind", "required"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kind": { "enum": ["text", "date", "select"] },
+        "required": { "type": "boolean" },
+        "options": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 120 } }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "select" } }, "required": ["kind"] }, "then": { "properties": { "options": true }, "required": ["options"] }, "else": { "not": { "required": ["options"] } } }
+      ]
+    },
+    "StepBase": {
+      "type": "object",
+      "required": ["id", "action", "name", "expectedOutcome"],
+      "properties": {
+        "id": { "$ref": "#/$defs/uuid" },
+        "action": { "enum": ["navigate", "wait", "read", "select", "type", "download", "compare", "ask-approval", "stop"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "expectedOutcome": { "type": "string", "minLength": 1, "maxLength": 240 }
+      }
+    },
+    "NavigateStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["target"], "properties": { "action": { "const": "navigate" }, "target": { "$ref": "#/$defs/PageTarget" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "WaitStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["target", "timeoutMs"], "properties": { "action": { "const": "wait" }, "target": { "$ref": "#/$defs/ElementTarget" }, "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 60000 } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ReadStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["target", "outputName"], "properties": { "action": { "const": "read" }, "target": { "$ref": "#/$defs/ElementTarget" }, "outputName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SelectStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["target", "inputName"], "properties": { "action": { "const": "select" }, "target": { "$ref": "#/$defs/ElementTarget" }, "inputName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "TypeStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["target", "inputName"], "properties": { "action": { "const": "type" }, "target": { "$ref": "#/$defs/ElementTarget" }, "inputName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "DownloadStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["target"], "properties": { "action": { "const": "download" }, "target": { "$ref": "#/$defs/ElementTarget" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "CompareStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["target", "operator", "expected"], "properties": { "action": { "const": "compare" }, "target": { "$ref": "#/$defs/ElementTarget" }, "operator": { "enum": ["equals", "contains", "matches"] }, "expected": { "type": "string", "maxLength": 1000 } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ApprovalStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["prompt"], "properties": { "action": { "const": "ask-approval" }, "prompt": { "type": "string", "minLength": 1, "maxLength": 240 } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "StopStep": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/StepBase" },
+        { "type": "object", "required": ["reason"], "properties": { "action": { "const": "stop" }, "reason": { "type": "string", "minLength": 1, "maxLength": 240 } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "WorkflowStep": {
+      "oneOf": [
+        { "$ref": "#/$defs/NavigateStep" }, { "$ref": "#/$defs/WaitStep" }, { "$ref": "#/$defs/ReadStep" },
+        { "$ref": "#/$defs/SelectStep" }, { "$ref": "#/$defs/TypeStep" }, { "$ref": "#/$defs/DownloadStep" },
+        { "$ref": "#/$defs/CompareStep" }, { "$ref": "#/$defs/ApprovalStep" }, { "$ref": "#/$defs/StopStep" }
+      ]
+    },
+    "WorkflowSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "format", "title", "allowedDomains", "inputs", "steps"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "format": { "const": "doonce.workflow-spec.v1" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "allowedDomains": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "$ref": "#/$defs/domain" } },
+        "inputs": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/WorkflowInputDefinition" } },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/WorkflowStep" } }
+      }
+    },
+    "RuntimeCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "executor", "actions", "maxSteps", "supportsDownloads"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "executor": { "enum": ["extension", "hosted-browser"] },
+        "actions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["navigate", "wait", "read", "select", "type", "download", "compare", "ask-approval", "stop"] } },
+        "maxSteps": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "supportsDownloads": { "type": "boolean" }
+      }
+    },
+    "RecordedAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "id", "sequence", "occurredAt", "origin", "path", "eventKind", "locator"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "id": { "$ref": "#/$defs/uuid" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "occurredAt": { "$ref": "#/$defs/timestamp" },
+        "origin": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "eventKind": { "enum": ["click", "change", "input", "navigate", "download"] },
+        "locator": { "$ref": "#/$defs/LocatorSpec" },
+        "actionHint": { "enum": ["download"] }
+      }
+    },
+    "CaptureSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "format", "id", "startedAt", "status", "approvedOrigins", "actions"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "format": { "const": "doonce.capture-session.v1" },
+        "id": { "$ref": "#/$defs/uuid" },
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "endedAt": { "$ref": "#/$defs/timestamp" },
+        "status": { "enum": ["recording", "paused", "completed"] },
+        "approvedOrigins": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "format": "uri" } },
+        "actions": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/RecordedAction" } }
+      }
+    },
+    "RunRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "runId", "workflowId", "workflowVersion", "executor", "inputs", "requestedAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "runId": { "$ref": "#/$defs/uuid" }, "workflowId": { "$ref": "#/$defs/uuid" },
+        "workflowVersion": { "type": "integer", "minimum": 1 }, "executor": { "enum": ["extension", "hosted-browser"] },
+        "inputs": { "type": "object", "additionalProperties": { "type": "string", "maxLength": 10000 } }, "requestedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "StepResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "stepId", "status", "startedAt", "finishedAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "stepId": { "$ref": "#/$defs/uuid" }, "status": { "enum": ["verified", "paused", "failed", "skipped"] },
+        "reasonCode": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" }, "startedAt": { "$ref": "#/$defs/timestamp" }, "finishedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "RunResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "format", "runId", "workflowId", "workflowVersion", "status", "stepResults", "startedAt", "finishedAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "format": { "const": "doonce.run-result.v1" }, "runId": { "$ref": "#/$defs/uuid" }, "workflowId": { "$ref": "#/$defs/uuid" },
+        "workflowVersion": { "type": "integer", "minimum": 1 }, "status": { "enum": ["completed", "paused", "failed", "cancelled"] },
+        "reasonCode": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" }, "stepResults": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/StepResult" } },
+        "startedAt": { "$ref": "#/$defs/timestamp" }, "finishedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "RepairOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "stepId", "reason"],
+      "properties": {
+        "op": { "enum": ["replace-locator", "update-expected-outcome"] }, "stepId": { "$ref": "#/$defs/uuid" }, "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "locator": { "$ref": "#/$defs/LocatorSpec" }, "expectedOutcome": { "type": "string", "minLength": 1, "maxLength": 240 }
+      },
+      "allOf": [
+        { "if": { "properties": { "op": { "const": "replace-locator" } }, "required": ["op"] }, "then": { "properties": { "locator": true, "expectedOutcome": false }, "required": ["locator"] }, "else": { "properties": { "expectedOutcome": true, "locator": false }, "required": ["expectedOutcome"] } }
+      ]
+    },
+    "RepairProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "format", "id", "workflowId", "baseVersion", "createdAt", "operations"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "format": { "const": "doonce.repair-proposal.v1" }, "id": { "$ref": "#/$defs/uuid" }, "workflowId": { "$ref": "#/$defs/uuid" },
+        "baseVersion": { "type": "integer", "minimum": 1 }, "createdAt": { "$ref": "#/$defs/timestamp" }, "operations": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/$defs/RepairOperation" } }
+      }
+    },
+    "ExtensionMessage": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "type", "sessionId"], "properties": { "schemaVersion": { "const": 1 }, "type": { "const": "capture.start" }, "sessionId": { "$ref": "#/$defs/uuid" } } },
+        { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "type", "sessionId"], "properties": { "schemaVersion": { "const": 1 }, "type": { "const": "capture.stop" }, "sessionId": { "$ref": "#/$defs/uuid" } } },
+        { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "type", "action"], "properties": { "schemaVersion": { "const": 1 }, "type": { "const": "capture.action" }, "action": { "$ref": "#/$defs/RecordedAction" } } },
+        { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "type", "request"], "properties": { "schemaVersion": { "const": 1 }, "type": { "const": "run.start" }, "request": { "$ref": "#/$defs/RunRequest" } } },
+        { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "type", "result"], "properties": { "schemaVersion": { "const": 1 }, "type": { "const": "run.result" }, "result": { "$ref": "#/$defs/RunResult" } } }
+      ]
+    },
+    "ApiError": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "error"],
+      "properties": { "schemaVersion": { "const": 1 }, "error": { "type": "string", "minLength": 1, "maxLength": 500 }, "code": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,127}$" }, "field": { "type": "string", "maxLength": 200 } }
+    }
+  }
+}

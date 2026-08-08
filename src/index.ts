@@ -2,6 +2,8 @@ import { buildServer } from "./server.js";
 import { AuthService } from "./auth/auth-service.js";
 import { PostgresAuthStore } from "./auth/postgres-auth-store.js";
 import { PostgresWorkflowStore } from "./workflow/postgres-workflow-store.js";
+import { CanonicalWorkflowService } from "./workflow/canonical-workflow-service.js";
+import { PostgresCanonicalWorkflowStore } from "./workflow/postgres-canonical-workflow-store.js";
 import { WorkflowService } from "./workflow/workflow-service.js";
 import { PostgresRunReceiptStore } from "./runner/postgres-run-receipt-store.js";
 import { PostgresSupportReportStore } from "./support/postgres-support-report-store.js";
@@ -25,6 +27,7 @@ const runReceiptStore = pool && sessionSecret ? new PostgresRunReceiptStore(pool
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
+  ...(pool ? { canonicalWorkflowService: new CanonicalWorkflowService(new PostgresCanonicalWorkflowStore(pool)) } : {}),
   ...(runReceiptStore ? { runReceiptStore } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });

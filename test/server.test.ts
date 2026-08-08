@@ -8,9 +8,12 @@ import type { SessionIdentity } from "../src/auth/session-token.js";
 import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
 import { WorkflowService, type WorkflowAuditEvent, type WorkflowStore } from "../src/workflow/workflow-service.js";
+import { CanonicalWorkflowService, type CanonicalWorkflowDraft, type CanonicalWorkflowStore } from "../src/workflow/canonical-workflow-service.js";
+import type { WorkflowSpec } from "../src/contracts/protocol.js";
 import type { OperationalControls } from "../src/system/operational-controls.js";
 import type { SubmittedSupportReport, SupportDiagnostic, SupportReportCategory, SupportReportStore } from "../src/support/postgres-support-report-store.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
+import { validProtocolFixtures } from "./fixtures/protocol-v1.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
@@ -83,6 +86,20 @@ class ServerWorkflowStore implements WorkflowStore {
     return active.version;
   }
   public async listAuditEvents(workflowId: string): Promise<WorkflowAuditEvent[]> { return this.events.filter((event) => event.workflowId === workflowId); }
+}
+
+class ServerCanonicalWorkflowStore implements CanonicalWorkflowStore {
+  private readonly drafts = new Map<string, CanonicalWorkflowDraft>();
+
+  public async createDraft(_user: AuthenticatedUser, workflowId: string, spec: WorkflowSpec): Promise<CanonicalWorkflowDraft> {
+    const draft = { id: workflowId, version: 1, status: "draft" as const, spec, checksum: "fixture-checksum" };
+    this.drafts.set(workflowId, draft);
+    return draft;
+  }
+
+  public async findDraft(_user: AuthenticatedUser, workflowId: string): Promise<CanonicalWorkflowDraft | undefined> {
+    return this.drafts.get(workflowId);
+  }
 }
 
 class FailingWorkflowStore extends ServerWorkflowStore {
@@ -187,6 +204,46 @@ test("health endpoint sends explicit browser security headers", async (t) => {
   assert.equal(response.headers["x-content-type-options"], "nosniff");
   assert.equal(response.headers["x-frame-options"], "DENY");
   assert.equal(response.headers["referrer-policy"], "strict-origin-when-cross-origin");
+});
+
+test("exposes generated OpenAPI only in development", async (t) => {
+  const app = await buildServer();
+  t.after(async () => app.close());
+  const response = await app.inject({ method: "GET", url: "/api/v1/openapi.json" });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().openapi, "3.1.0");
+  assert.equal(response.json().info.title, "DoOnce API");
+  assert.equal(Object.keys(response.json().paths).some((path) => path === "/api/v1/capabilities/evaluate"), true);
+});
+
+test("creates and reloads one validated canonical WorkflowSpec through the API", async (t) => {
+  const canonicalStore = new ServerCanonicalWorkflowStore();
+  const app = await buildServer({
+    authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
+    canonicalWorkflowService: new CanonicalWorkflowService(canonicalStore),
+  });
+  t.after(async () => app.close());
+  const signedUp = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/sign-up",
+    headers: { origin: "http://localhost:3000" },
+    payload: { email: "canonical@example.com", password: "correct-horse-battery-staple", tenantName: "Canonical Workspace" },
+  });
+  const cookie = signedUp.cookies[0]?.name && `${signedUp.cookies[0].name}=${signedUp.cookies[0].value}`;
+  assert.ok(cookie);
+
+  const created = await app.inject({
+    method: "POST",
+    url: "/api/v1/workflow-specs",
+    headers: { origin: "http://localhost:3000", cookie },
+    payload: validProtocolFixtures.WorkflowSpec,
+  });
+
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(created.json().workflow.spec, validProtocolFixtures.WorkflowSpec);
+  const loaded = await app.inject({ method: "GET", url: `/api/v1/workflow-specs/${created.json().workflow.id}`, headers: { cookie } });
+  assert.equal(loaded.statusCode, 200);
+  assert.deepEqual(loaded.json().workflow.spec, validProtocolFixtures.WorkflowSpec);
 });
 
 test("unexpected API errors do not disclose internal details", async (t) => {
