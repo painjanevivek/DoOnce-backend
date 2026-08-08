@@ -106,3 +106,5 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+GitHub Actions runs the test suite, lint, type check, and production build for pull requests and every push to `main`.
