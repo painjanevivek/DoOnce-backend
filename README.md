@@ -54,28 +54,28 @@ Sign-up and sign-in are limited to five requests per minute for each client addr
 ### Workflow endpoints
 
 - `GET /api/v1/workflows` lists workflows only within the authenticated tenant, including a nullable draft version so the dashboard can offer an explicit resume action without returning draft contents.
-- `GET /api/v1/workflows/:id` returns the current tenant-scoped draft review with derived `policyPreviewed` and `testRunVerified` booleans. It does not return policy timestamps, receipt IDs, browser content, or action values.
+- `GET /api/v1/workflows/:id` returns the current tenant-scoped draft review with derived `capabilitiesPreviewed` and `testRunVerified` booleans. The deprecated `policyPreviewed` alias remains for one migration window.
 - `POST /api/v1/workflows` creates a draft. The server assigns its ID, tenant and owner; browser input cannot choose them.
-- `POST /api/v1/workflows/:id/publish` permits only owner/builder roles after both a server policy preview and one completed, tenant-scoped local test receipt exist for the exact draft version. Reversible writes, approvals, submissions and unknown actions cannot be published.
+- `POST /api/v1/workflows/:id/publish` permits only owner/builder roles after both a server capability preview and one completed, tenant-scoped local test receipt exist for the exact draft version. Reversible writes, approvals, submissions and unknown actions cannot be published.
 - `POST /api/v1/workflows/:id/test-receipts/import` accepts only a completed local report-demo receipt for the current draft. It derives the tenant, draft version, actor, step IDs, and timestamps server-side; paused receipts cannot unlock publication.
 - `POST /api/v1/workflows/:id/disable` permits only an owner to immediately archive the active version. It remains available during the global workflow-change freeze and writes an immutable lifecycle event.
-- `POST /api/v1/workflows/:id/repair-draft` lets an owner or builder create one idempotent next-version repair draft from the latest active or disabled version. It copies only the already allowlisted definition, clears its policy-preview timestamp, and requires the normal review, preview, and publication flow before activation.
+- `POST /api/v1/workflows/:id/repair-draft` lets an owner or builder create one idempotent next-version repair draft from the latest active or disabled version. It copies only the allowlisted definition, clears its capability-preview timestamp, and requires the normal review, preview, and publication flow before activation.
 - `GET /api/v1/workflows/:id/audit-events` returns the tenant-scoped, append-only workflow lifecycle events.
 - `POST /api/v1/workflows/:id/run-receipts/import` accepts a user-confirmed local receipt only from an authenticated dashboard request with an approved Origin. The server derives the tenant, actor, active version, step IDs, and receipt timestamps; it accepts only the explicit local report-demo workflow shape.
 - `GET /api/v1/workflows/:id/run-receipts` returns the newest 50 redacted receipts for that workflow within the authenticated tenant. It never returns browser page content, action values, tenant IDs, or actor IDs.
 - `GET /api/v1/workflows/:id/run-health?version=:version` returns only the selected version's bounded receipt counts, success rate, and stable pause-reason totals. It marks evidence for the 50-run/90-percent manual reliability threshold; it cannot schedule or run a workflow.
 
-Receipt imports are immutable. Re-saving the same local receipt returns a safe conflict response rather than creating a duplicate or exposing a database error.
+Receipt imports are immutable. Re-saving the same local receipt returns a controlled conflict response rather than creating a duplicate or exposing a database error.
 Owners, builders, and runners may save verified receipts; reviewers remain read-only.
 Imported local pause receipts accept only `changed-page`, `slow-network`, or `unknown` as their redacted reason code.
 
-Draft creation, policy-preview completion, publication, disabling, and repair-draft creation each write an immutable audit event containing IDs, version, actor and timestamp. Metadata is limited to aggregate counts; it never includes browser content, action values, credentials or OTPs.
+Draft creation, capability-preview completion, publication, disabling, and repair-draft creation each write an immutable audit event containing IDs, version, actor and timestamp. Metadata is limited to aggregate counts; it never includes browser content, action values, credentials or OTPs.
 
 All state-changing authentication and workflow routes require a configured browser `Origin`; credentialed CORS is enabled only for the explicit `DOONCE_ALLOWED_ORIGINS` allowlist.
 
 ### Pilot support endpoint
 
-- `POST /api/v1/support-reports` lets any authenticated tenant member report a paused workflow, unexpected result, safety concern, or other problem from the dashboard.
+- `POST /api/v1/support-reports` lets any authenticated tenant member report a paused workflow, unexpected result, execution concern, or other problem from the dashboard. The stored `safety-concern` value remains a v1 compatibility identifier.
 
 Reports deliberately contain only the selected category and server-derived tenant, reporter, ID, and timestamp. They never accept attachments, page content, selectors, action values, passwords, OTPs, or free-form diagnostic text.
 
@@ -96,7 +96,7 @@ Internal source drafts for privacy, terms, incident response, and data retention
 ### Operational controls
 
 - Set `DOONCE_WORKFLOW_CHANGES_ENABLED=false` to block draft creation and publication while keeping the dashboard readable.
-- Set `DOONCE_KILL_SWITCH=true` to override the workflow-change flag immediately. The public safety-status endpoint reports both controls without exposing tenant data.
+- Set `DOONCE_KILL_SWITCH=true` to override the workflow-change flag immediately. The public capabilities endpoint reports both controls without exposing tenant data.
 
 ## Checks
 
