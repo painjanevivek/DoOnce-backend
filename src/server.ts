@@ -501,6 +501,7 @@ export async function buildServer(options: ServerOptions = {}) {
     schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
   }, async (request, reply) => {
     if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
     const auth = options.authService;
     const workflows = options.workflowService;
     if (!auth || !workflows) return reply.code(503).send({ error: "Workflow service is not configured." });

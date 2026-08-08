@@ -669,8 +669,14 @@ test("kill switch blocks workflow mutations and is visible in public safety stat
     headers: { origin: "http://localhost:3000" },
     payload: workflowCreatePayload,
   });
+  const preview = await app.inject({
+    method: "POST",
+    url: "/api/v1/workflows/a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b/preview",
+    headers: { origin: "http://localhost:3000" },
+  });
 
   assert.equal(safety.json().workflowChangesEnabled, false);
   assert.equal(safety.json().killSwitchActive, true);
   assert.equal(mutation.statusCode, 503);
+  assert.equal(preview.statusCode, 503);
 });
