@@ -16,7 +16,19 @@ export interface PageTarget { domain: string; path: string }
 export interface ElementTarget extends PageTarget { locator: LocatorSpec }
 export interface WorkflowInputDefinition { name: string; label: string; kind: "text" | "date" | "select"; required: boolean; options?: string[]; defaultValue?: string; secret?: boolean }
 
-interface WorkflowStepBase { id: string; action: WorkflowActionKind; name: string; expectedOutcome: string }
+interface WorkflowAssertionBase { id: string; name: string }
+export interface UrlMatchAssertion extends WorkflowAssertionBase { kind: "url-match"; operator: "equals" | "contains" | "matches"; expected: string }
+export interface ElementPresenceAssertion extends WorkflowAssertionBase { kind: "element-present" | "element-absent"; target: ElementTarget }
+export interface TextMatchAssertion extends WorkflowAssertionBase { kind: "text-match"; target: ElementTarget; operator: "equals" | "contains" | "matches"; expected: string }
+export interface FieldStateAssertion extends WorkflowAssertionBase { kind: "field-state"; target: ElementTarget; operator: "equals" | "contains" | "matches"; expected: string }
+export interface DownloadAssertion extends WorkflowAssertionBase { kind: "file-downloaded"; fileNamePattern?: string; contentTypes?: string[]; minBytes?: number; maxBytes?: number }
+export interface ExtractedValueAssertion extends WorkflowAssertionBase { kind: "extracted-value"; outputName: string; operator: "equals" | "contains" | "matches"; expected: string }
+export interface TableRowCountAssertion extends WorkflowAssertionBase { kind: "table-row-count"; target: ElementTarget; operator: "equals" | "at-least" | "at-most"; count: number }
+export interface UserConfirmationAssertion extends WorkflowAssertionBase { kind: "user-confirmation"; prompt: string }
+export type WorkflowAssertion = UrlMatchAssertion | ElementPresenceAssertion | TextMatchAssertion | FieldStateAssertion | DownloadAssertion | ExtractedValueAssertion | TableRowCountAssertion | UserConfirmationAssertion;
+export interface AssertionResult { schemaVersion: SchemaVersion; assertionId: string; status: "verified" | "failed" | "confirmation-required"; reasonCode?: string; observed?: string; evidenceRefs?: string[]; verifiedAt: string }
+
+interface WorkflowStepBase { id: string; action: WorkflowActionKind; name: string; expectedOutcome: string; assertions?: WorkflowAssertion[] }
 export interface NavigateStep extends WorkflowStepBase { action: "navigate"; target: PageTarget }
 export interface WaitStep extends WorkflowStepBase { action: "wait"; target: ElementTarget; timeoutMs: number }
 export interface ReadStep extends WorkflowStepBase { action: "read"; target: ElementTarget; outputName: string }
@@ -37,6 +49,7 @@ export interface WorkflowSpec {
   allowedDomains: string[];
   inputs: WorkflowInputDefinition[];
   steps: WorkflowStep[];
+  successCriteria?: WorkflowAssertion[];
 }
 
 export interface RuntimeCapabilities {
@@ -136,6 +149,7 @@ export interface StepResult {
   evidenceRefs?: string[];
   retryCount?: number;
   observedPage?: PageState;
+  assertionResults?: AssertionResult[];
 }
 
 export interface RunResult {
@@ -149,6 +163,7 @@ export interface RunResult {
   stepResults: StepResult[];
   startedAt: string;
   finishedAt: string;
+  assertionResults?: AssertionResult[];
 }
 
 export type RepairOperation =

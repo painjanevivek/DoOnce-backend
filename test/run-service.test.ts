@@ -14,7 +14,7 @@ const workflow: WorkflowSpec = {
 };
 
 class MemoryRunStore implements RunStore {
-  public published: PublishedWorkflow | undefined = { workflowId, version: 2, spec: workflow };
+  public published: PublishedWorkflow | undefined = { workflowId, version: 2, checksum: "a".repeat(64), status: "active", spec: workflow };
   public run: ExecutionRun | undefined;
   public request: RunRequest | undefined;
   public requestDigest = "";
@@ -22,15 +22,16 @@ class MemoryRunStore implements RunStore {
   public leaseHash = "";
   public cancelled = false;
 
-  public async findPublished(): Promise<PublishedWorkflow | undefined> { return this.published; }
-  public async create(_user: AuthenticatedUser, request: RunRequest, _workflow: WorkflowSpec, idempotencyKey: string, requestDigest: string) {
+  public async findExecutable(): Promise<PublishedWorkflow | undefined> { return this.published; }
+  public async create(_user: AuthenticatedUser, request: RunRequest, executable: PublishedWorkflow, idempotencyKey: string, requestDigest: string) {
     if (this.run && idempotencyKey === this.idempotencyKey) return { created: false, run: this.run, requestDigest: this.requestDigest };
     this.request = request; this.requestDigest = requestDigest; this.idempotencyKey = idempotencyKey;
-    this.run = { id: request.runId, workflowId: request.workflowId, workflowVersion: request.workflowVersion, status: "queued", executor: "extension", requestedAt: request.requestedAt, cancelRequested: false, currentStepIndex: 0, stepResults: [] };
+    this.run = { id: request.runId, workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: executable.status === "draft" ? "test" : "production", status: "queued", executor: "extension", requestedAt: request.requestedAt, cancelRequested: false, currentStepIndex: 0, stepResults: [] };
     return { created: true, run: this.run, requestDigest };
   }
   public async list(): Promise<ExecutionRun[]> { return this.run ? [this.run] : []; }
   public async find(): Promise<ExecutionRun | undefined> { return this.run; }
+  public async timeline() { return this.run ? { run: this.run, steps: this.run.stepResults, events: [], artifacts: [] } : undefined; }
   public async claim(_user: AuthenticatedUser, input: { extensionVersion: string; leaseTokenHash: string; leaseExpiresAt: string }) {
     if (!this.run || this.run.status !== "queued") return undefined;
     this.leaseHash = input.leaseTokenHash;
@@ -64,6 +65,16 @@ test("validates required and enumerated workflow inputs", async () => {
   const service = new RunService(new MemoryRunStore());
   await assert.rejects(() => service.create(user, { workflowId, inputs: {}, idempotencyKey: "dashboard:request-3" }), RunInputError);
   await assert.rejects(() => service.create(user, { workflowId, inputs: { region: "east" }, idempotencyKey: "dashboard:request-4" }), RunInputError);
+});
+
+test("binds test runs to the exact editable draft checksum", async () => {
+  const store = new MemoryRunStore();
+  store.published = { workflowId, version: 3, checksum: "b".repeat(64), status: "draft", spec: workflow };
+  const created = await new RunService(store).create(user, { workflowId, inputs: { region: "north" }, mode: "test", idempotencyKey: "draft:test-1" });
+  assert.equal(created.run.mode, "test");
+  assert.equal(created.run.workflowVersion, 3);
+  assert.equal(created.run.workflowChecksum, "b".repeat(64));
+  assert.equal(store.request?.workflowVersion, 3);
 });
 
 test("claims, heartbeats, checkpoints, and completes with an opaque lease", async () => {

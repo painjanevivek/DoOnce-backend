@@ -98,14 +98,17 @@ test("lists editor summaries with version and bounded run-health fields", async 
 
 test("publishes under a workflow lock and archives the previous active version", async () => {
   const queries: string[] = [];
+  const evidenceRunId = "f0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b";
   const store = new PostgresCanonicalWorkflowStore(poolWithQuery(async (sql) => {
     queries.push(sql);
     if (sql.startsWith("SELECT version, definition, definition_checksum")) return { rows: [{ version: 2, definition: spec, definition_checksum: "e".repeat(64) }] };
     if (sql.startsWith("UPDATE workflow_versions SET status = 'active'")) return { rows: [{ workflow_id: workflowId, version: 2, status: "active", definition: spec, definition_checksum: "e".repeat(64), created_at: "2026-08-09T00:00:00.000Z", published_at: "2026-08-09T00:01:00.000Z" }] };
+    if (sql.startsWith("SELECT run_id FROM workflow_test_evidence")) return { rows: [{ run_id: evidenceRunId }] };
     return { rows: [] };
   }));
   const result = await store.publishDraft(user, workflowId, "e".repeat(64));
   assert.equal(result.status, "published");
+  if (result.status === "published") assert.equal(result.version.testEvidenceRunId, evidenceRunId);
   assert.ok(queries.some((sql) => sql.includes("FOR UPDATE")));
   assert.ok(queries.some((sql) => sql.includes("status = 'archived'")));
 });

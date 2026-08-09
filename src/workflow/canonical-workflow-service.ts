@@ -12,6 +12,7 @@ export interface CanonicalWorkflowDraft {
   status: "draft";
   spec: WorkflowSpec;
   checksum: string;
+  testEvidenceVerified?: boolean;
   metadata?: CanonicalWorkflowDraftMetadata;
 }
 
@@ -40,6 +41,7 @@ export interface CanonicalWorkflowVersion {
   status: "draft" | "active" | "archived";
   spec: WorkflowSpec;
   checksum: string;
+  testEvidenceRunId: string | null;
   createdAt: string;
   publishedAt: string | null;
 }
@@ -55,6 +57,7 @@ export interface CanonicalWorkflowStore {
   listVersions(user: AuthenticatedUser, workflowId: string): Promise<CanonicalWorkflowVersion[]>;
   updateDraft(user: AuthenticatedUser, workflowId: string, expectedChecksum: string, spec: WorkflowSpec): Promise<CanonicalDraftMutationResult>;
   createNextDraft(user: AuthenticatedUser, workflowId: string): Promise<CanonicalNextDraftResult>;
+  hasPassingTestEvidence(user: AuthenticatedUser, workflowId: string, version: number, checksum: string): Promise<boolean>;
   publishDraft(user: AuthenticatedUser, workflowId: string, expectedChecksum: string): Promise<CanonicalPublishResult>;
 }
 
@@ -80,7 +83,8 @@ export class CanonicalWorkflowService {
     if (!draft) return undefined;
     const validation = validateProtocolContract<WorkflowSpec>("WorkflowSpec", draft.spec);
     if (!validation.ok) throw new CanonicalWorkflowInputError("Stored workflow data does not match its schema version.");
-    return { ...draft, spec: immutableSpec(validation.value), ...(draft.metadata ? { metadata: validateMetadata(draft.metadata, validation.value) } : {}) };
+    const testEvidenceVerified = await this.store.hasPassingTestEvidence(user, workflowId, draft.version, draft.checksum);
+    return { ...draft, testEvidenceVerified, spec: immutableSpec(validation.value), ...(draft.metadata ? { metadata: validateMetadata(draft.metadata, validation.value) } : {}) };
   }
 
   public listWorkflows(user: AuthenticatedUser): Promise<CanonicalWorkflowSummary[]> { return this.store.listWorkflows(user); }
@@ -115,6 +119,7 @@ export class CanonicalWorkflowService {
     if (draft.checksum !== expectedChecksum) return { status: "conflict", draft };
     const validation = validateProtocolContract<WorkflowSpec>("WorkflowSpec", draft.spec);
     if (!validation.ok) throw new CanonicalWorkflowInputError("Invalid workflows cannot be published.", validation.errors);
+    if (!draft.testEvidenceVerified) throw new CanonicalWorkflowInputError("Run this exact saved draft successfully in test mode before publishing.");
     const result = await this.store.publishDraft(user, workflowId, expectedChecksum);
     return result.status === "published" ? { ...result, version: { ...result.version, spec: immutableSpec(result.version.spec) } } : result;
   }

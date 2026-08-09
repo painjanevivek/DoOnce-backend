@@ -10,6 +10,8 @@ export interface ExecutionRun {
   id: string;
   workflowId: string;
   workflowVersion: number;
+  workflowChecksum: string;
+  mode: "test" | "production";
   status: RunStatus;
   executor: "extension";
   requestedAt: string;
@@ -23,15 +25,19 @@ export interface ExecutionRun {
   result?: RunResult;
 }
 
-export interface PublishedWorkflow { workflowId: string; version: number; spec: WorkflowSpec }
+export interface PublishedWorkflow { workflowId: string; version: number; checksum: string; status: "draft" | "active"; spec: WorkflowSpec }
 export interface ClaimedRun { run: ExecutionRun; request: RunRequest; workflow: WorkflowSpec; checkpoint?: RunCheckpoint; leaseToken: string; leaseExpiresAt: string }
 export interface RunCheckpoint { currentStepIndex: number; stepResults: StepResult[]; variables: Record<string, string>; observedUrl?: string; inFlightStepId?: string }
+export interface RunTimelineEvent { id: string; eventType: string; stepId?: string; metadata: Record<string, unknown>; createdAt: string }
+export interface RunTimelineArtifact { id: string; stepId?: string; retentionClass: string; fileName: string; contentType: string; byteSize: number; checksumSha256: string; createdAt: string }
+export interface RunTimeline { run: ExecutionRun; steps: StepResult[]; events: RunTimelineEvent[]; artifacts: RunTimelineArtifact[] }
 
 export interface RunStore {
-  findPublished(user: AuthenticatedUser, workflowId: string): Promise<PublishedWorkflow | undefined>;
-  create(user: AuthenticatedUser, request: RunRequest, workflow: WorkflowSpec, idempotencyKey: string, requestDigest: string): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }>;
+  findExecutable(user: AuthenticatedUser, workflowId: string, mode: "test" | "production"): Promise<PublishedWorkflow | undefined>;
+  create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }>;
   list(user: AuthenticatedUser, limit: number): Promise<ExecutionRun[]>;
   find(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined>;
+  timeline(user: AuthenticatedUser, runId: string): Promise<RunTimeline | undefined>;
   claim(user: AuthenticatedUser, input: { extensionVersion: string; capabilities: string[]; leaseTokenHash: string; leaseExpiresAt: string }): Promise<{ run: ExecutionRun; request: RunRequest; workflow: WorkflowSpec; checkpoint?: RunCheckpoint } | undefined>;
   heartbeat(user: AuthenticatedUser, runId: string, leaseTokenHash: string, leaseExpiresAt: string): Promise<ExecutionRun | undefined>;
   checkpoint(user: AuthenticatedUser, runId: string, leaseTokenHash: string, checkpoint: RunCheckpoint, leaseExpiresAt: string): Promise<ExecutionRun | undefined>;
@@ -51,13 +57,13 @@ export class RunService {
   public async create(user: AuthenticatedUser, input: unknown): Promise<{ created: boolean; run: ExecutionRun }> {
     requireRunRole(user.role);
     const parsed = parseCreateInput(input);
-    const published = await this.store.findPublished(user, parsed.workflowId);
-    if (!published) throw new RunInputError("A published workflow version is required before starting a run.");
-    const inputs = resolveInputs(published.spec, parsed.inputs);
+    const executable = await this.store.findExecutable(user, parsed.workflowId, parsed.mode);
+    if (!executable) throw new RunInputError(parsed.mode === "test" ? "An editable workflow draft is required before starting a test run." : "A published workflow version is required before starting a run.");
+    const inputs = resolveInputs(executable.spec, parsed.inputs);
     const requestedAt = new Date().toISOString();
-    const request: RunRequest = { schemaVersion: 1, runId: randomUUID(), workflowId: published.workflowId, workflowVersion: published.version, executor: "extension", inputs, requestedAt };
-    const requestDigest = digest({ workflowId: request.workflowId, workflowVersion: request.workflowVersion, executor: request.executor, inputs });
-    const stored = await this.store.create(user, request, published.spec, parsed.idempotencyKey, requestDigest);
+    const request: RunRequest = { schemaVersion: 1, runId: randomUUID(), workflowId: executable.workflowId, workflowVersion: executable.version, executor: "extension", inputs, requestedAt };
+    const requestDigest = digest({ workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: parsed.mode, executor: request.executor, inputs });
+    const stored = await this.store.create(user, request, executable, parsed.idempotencyKey, requestDigest);
     if (!stored.created && stored.requestDigest !== requestDigest) throw new RunConflictError("This idempotency key was already used for a different run request.");
     return { created: stored.created, run: stored.run };
   }
@@ -67,6 +73,7 @@ export class RunService {
   }
 
   public find(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined> { return this.store.find(user, requireUuid(runId)); }
+  public timeline(user: AuthenticatedUser, runId: string): Promise<RunTimeline | undefined> { return this.store.timeline(user, requireUuid(runId)); }
 
   public async claim(user: AuthenticatedUser, input: unknown): Promise<ClaimedRun | undefined> {
     const parsed = parseClaimInput(input);
@@ -106,12 +113,13 @@ export class RunService {
   }
 }
 
-function parseCreateInput(value: unknown): { workflowId: string; inputs: Record<string, string>; idempotencyKey: string } {
-  if (!isRecord(value) || Object.keys(value).some((key) => !["workflowId", "inputs", "idempotencyKey"].includes(key))) throw new RunInputError("The run request is invalid.");
+function parseCreateInput(value: unknown): { workflowId: string; inputs: Record<string, string>; idempotencyKey: string; mode: "test" | "production" } {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["workflowId", "inputs", "idempotencyKey", "mode"].includes(key))) throw new RunInputError("The run request is invalid.");
   const workflowId = requireUuid(value.workflowId);
   if (!isRecord(value.inputs) || !Object.values(value.inputs).every((item) => typeof item === "string" && item.length <= 10_000)) throw new RunInputError("Run inputs must be text values.");
   if (typeof value.idempotencyKey !== "string" || !/^[a-zA-Z0-9._:-]{8,128}$/.test(value.idempotencyKey)) throw new RunInputError("Provide a valid idempotency key.");
-  return { workflowId, inputs: value.inputs as Record<string, string>, idempotencyKey: value.idempotencyKey };
+  if (value.mode !== undefined && value.mode !== "test" && value.mode !== "production") throw new RunInputError("Run mode must be test or production.");
+  return { workflowId, inputs: value.inputs as Record<string, string>, idempotencyKey: value.idempotencyKey, mode: value.mode === "test" ? "test" : "production" };
 }
 
 function resolveInputs(spec: WorkflowSpec, supplied: Record<string, string>): Record<string, string> {

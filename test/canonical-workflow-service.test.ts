@@ -7,6 +7,7 @@ import { validProtocolFixtures } from "./fixtures/protocol-v1.js";
 
 class MemoryCanonicalStore implements CanonicalWorkflowStore {
   public draft?: CanonicalWorkflowDraft;
+  public tested = true;
   public async createDraft(_user: AuthenticatedUser, id: string, spec: WorkflowSpec, metadata?: import("../src/workflow/canonical-workflow-service.js").CanonicalWorkflowDraftMetadata): Promise<CanonicalWorkflowDraft> {
     this.draft = { id, version: 1, status: "draft", spec, checksum: "a".repeat(64), ...(metadata ? { metadata } : {}) };
     return this.draft;
@@ -21,9 +22,10 @@ class MemoryCanonicalStore implements CanonicalWorkflowStore {
     return { status: "updated", draft: this.draft };
   }
   public async createNextDraft(): Promise<CanonicalNextDraftResult> { return this.draft ? { status: "exists", draft: this.draft } : { status: "missing" }; }
+  public async hasPassingTestEvidence(): Promise<boolean> { return this.tested; }
   public async publishDraft(): Promise<CanonicalPublishResult> {
     if (!this.draft) return { status: "missing" };
-    return { status: "published", version: { id: this.draft.id, version: this.draft.version, status: "active", spec: this.draft.spec, checksum: this.draft.checksum, createdAt: "2026-08-09T00:00:00.000Z", publishedAt: "2026-08-09T00:00:01.000Z" } };
+    return { status: "published", version: { id: this.draft.id, version: this.draft.version, status: "active", spec: this.draft.spec, checksum: this.draft.checksum, testEvidenceRunId: "e0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", createdAt: "2026-08-09T00:00:00.000Z", publishedAt: "2026-08-09T00:00:01.000Z" } };
   }
 }
 
@@ -34,7 +36,7 @@ test("creates, stores, loads, and validates an immutable WorkflowSpec", async ()
   const service = new CanonicalWorkflowService(new MemoryCanonicalStore());
   const created = await service.createDraft(owner, workflow);
   const loaded = await service.findDraft(owner, created.id);
-  assert.deepEqual(loaded, created);
+  assert.deepEqual(loaded, { ...created, testEvidenceVerified: true });
   assert.equal(Object.isFrozen(created.spec), true);
   assert.equal(Object.isFrozen(created.spec.steps), true);
   assert.throws(() => { created.spec.title = "Changed"; }, TypeError);
@@ -43,6 +45,16 @@ test("creates, stores, loads, and validates an immutable WorkflowSpec", async ()
 test("rejects unknown fields before storage", async () => {
   const service = new CanonicalWorkflowService(new MemoryCanonicalStore());
   await assert.rejects(() => service.createDraft(owner, { ...workflow, unexpected: true }), CanonicalWorkflowInputError);
+});
+
+test("requires passing test evidence for the exact saved draft checksum", async () => {
+  const store = new MemoryCanonicalStore();
+  const service = new CanonicalWorkflowService(store);
+  const draft = await service.createDraft(owner, workflow);
+  store.tested = false;
+  await assert.rejects(() => service.publishDraft(owner, draft.id, draft.checksum), /exact saved draft/);
+  store.tested = true;
+  assert.equal((await service.publishDraft(owner, draft.id, draft.checksum)).status, "published");
 });
 
 test("allows only workflow authors to create canonical drafts", async () => {

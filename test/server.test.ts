@@ -122,6 +122,7 @@ class ServerCanonicalWorkflowStore implements CanonicalWorkflowStore {
     const draft = this.drafts.get(workflowId);
     return draft ? { status: "exists", draft } : { status: "missing" };
   }
+  public async hasPassingTestEvidence(): Promise<boolean> { return true; }
   public async publishDraft(_user: AuthenticatedUser, workflowId: string, expectedChecksum: string): Promise<import("../src/workflow/canonical-workflow-service.js").CanonicalPublishResult> {
     const draft = this.drafts.get(workflowId);
     if (!draft) return { status: "missing" };

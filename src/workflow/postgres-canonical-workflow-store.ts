@@ -75,7 +75,7 @@ export class PostgresCanonicalWorkflowStore implements CanonicalWorkflowStore {
     try {
       return await withTenantTransaction(client, user, async (transaction) => {
         const result = await transaction.query<VersionRow>(
-          "SELECT workflow_id, version, status, definition, definition_checksum, created_at, published_at FROM workflow_versions WHERE workflow_id = $1 AND schema_version = 1 ORDER BY version DESC LIMIT 100",
+          "SELECT versions.workflow_id, versions.version, versions.status, versions.definition, versions.definition_checksum, versions.created_at, versions.published_at, evidence.run_id AS test_evidence_run_id FROM workflow_versions versions LEFT JOIN LATERAL (SELECT run_id FROM workflow_test_evidence WHERE workflow_id = versions.workflow_id AND workflow_version = versions.version AND workflow_checksum = versions.definition_checksum ORDER BY verified_at DESC LIMIT 1) evidence ON true WHERE versions.workflow_id = $1 AND versions.schema_version = 1 ORDER BY versions.version DESC LIMIT 100",
           [workflowId],
         );
         return result.rows.map(mapVersion);
@@ -124,6 +124,12 @@ export class PostgresCanonicalWorkflowStore implements CanonicalWorkflowStore {
     } finally { client.release(); }
   }
 
+  public async hasPassingTestEvidence(user: AuthenticatedUser, workflowId: string, version: number, checksum: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try { return await withTenantTransaction(client, user, async (transaction) => Boolean((await transaction.query("SELECT 1 FROM workflow_test_evidence WHERE workflow_id = $1 AND workflow_version = $2 AND workflow_checksum = $3 LIMIT 1", [workflowId, version, checksum])).rows[0])); }
+    finally { client.release(); }
+  }
+
   public async publishDraft(user: AuthenticatedUser, workflowId: string, expectedChecksum: string): Promise<CanonicalPublishResult> {
     const client = await this.pool.connect();
     try {
@@ -138,13 +144,14 @@ export class PostgresCanonicalWorkflowStore implements CanonicalWorkflowStore {
         if (!version) return { status: "conflict", draft: current };
         await transaction.query("UPDATE workflows SET active_version = $1, title = $2, updated_at = now() WHERE id = $3", [current.version, current.spec.title, workflowId]);
         await transaction.query("INSERT INTO workflow_audit_events (tenant_id, workflow_id, workflow_version, actor_id, event_type, metadata) VALUES ($1, $2, $3, $4, 'workflow.published', $5::jsonb)", [user.tenantId, workflowId, current.version, user.userId, JSON.stringify({ checksum: expectedChecksum, schemaVersion: 1 })]);
-        return { status: "published", version: mapVersion(version) };
+        const evidence = await transaction.query<{ run_id: string }>("SELECT run_id FROM workflow_test_evidence WHERE workflow_id = $1 AND workflow_version = $2 AND workflow_checksum = $3 ORDER BY verified_at DESC LIMIT 1", [workflowId, current.version, expectedChecksum]);
+        return { status: "published", version: mapVersion({ ...version, test_evidence_run_id: evidence.rows[0]?.run_id ?? null }) };
       });
     } finally { client.release(); }
   }
 }
 
-interface VersionRow extends Record<string, unknown> { workflow_id: string; version: number; status: "draft" | "active" | "archived"; definition: WorkflowSpec; definition_checksum: string; created_at: Date | string; published_at: Date | string | null }
+interface VersionRow extends Record<string, unknown> { workflow_id: string; version: number; status: "draft" | "active" | "archived"; definition: WorkflowSpec; definition_checksum: string; test_evidence_run_id?: string | null; created_at: Date | string; published_at: Date | string | null }
 
 async function selectDraft(transaction: SqlClient, workflowId: string): Promise<CanonicalWorkflowDraft | undefined> {
   const result = await transaction.query<{ version: number; definition: WorkflowSpec; definition_checksum: string }>("SELECT version, definition, definition_checksum FROM workflow_versions WHERE workflow_id = $1 AND schema_version = 1 AND status = 'draft' ORDER BY version DESC LIMIT 1", [workflowId]);
@@ -153,7 +160,7 @@ async function selectDraft(transaction: SqlClient, workflowId: string): Promise<
 }
 
 function mapVersion(row: VersionRow): CanonicalWorkflowVersion {
-  return { id: row.workflow_id, version: row.version, status: row.status, spec: row.definition, checksum: row.definition_checksum, createdAt: toIso(row.created_at), publishedAt: row.published_at ? toIso(row.published_at) : null };
+  return { id: row.workflow_id, version: row.version, status: row.status, spec: row.definition, checksum: row.definition_checksum, testEvidenceRunId: row.test_evidence_run_id ?? null, createdAt: toIso(row.created_at), publishedAt: row.published_at ? toIso(row.published_at) : null };
 }
 
 function toIso(value: Date | string): string { return value instanceof Date ? value.toISOString() : new Date(value).toISOString(); }

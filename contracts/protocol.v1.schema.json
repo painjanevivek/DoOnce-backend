@@ -113,6 +113,22 @@
         { "if": { "properties": { "kind": { "const": "select" } }, "required": ["kind"] }, "then": { "properties": { "options": true }, "required": ["options"] }, "else": { "not": { "required": ["options"] } } }
       ]
     },
+    "WorkflowAssertion": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "operator", "expected"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "const": "url-match" }, "operator": { "enum": ["equals", "contains", "matches"] }, "expected": { "type": "string", "maxLength": 2048 } } },
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "target"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "enum": ["element-present", "element-absent"] }, "target": { "$ref": "#/$defs/ElementTarget" } } },
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "target", "operator", "expected"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "const": "text-match" }, "target": { "$ref": "#/$defs/ElementTarget" }, "operator": { "enum": ["equals", "contains", "matches"] }, "expected": { "type": "string", "maxLength": 1000 } } },
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "target", "operator", "expected"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "const": "field-state" }, "target": { "$ref": "#/$defs/ElementTarget" }, "operator": { "enum": ["equals", "contains", "matches"] }, "expected": { "type": "string", "maxLength": 1000 } } },
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "const": "file-downloaded" }, "fileNamePattern": { "type": "string", "maxLength": 240 }, "contentTypes": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$", "maxLength": 120 } }, "minBytes": { "type": "integer", "minimum": 0, "maximum": 1073741824 }, "maxBytes": { "type": "integer", "minimum": 0, "maximum": 1073741824 } } },
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "outputName", "operator", "expected"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "const": "extracted-value" }, "outputName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }, "operator": { "enum": ["equals", "contains", "matches"] }, "expected": { "type": "string", "maxLength": 1000 } } },
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "target", "operator", "count"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "const": "table-row-count" }, "target": { "$ref": "#/$defs/ElementTarget" }, "operator": { "enum": ["equals", "at-least", "at-most"] }, "count": { "type": "integer", "minimum": 0, "maximum": 1000000 } } },
+        { "type": "object", "additionalProperties": false, "required": ["id", "name", "kind", "prompt"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "kind": { "const": "user-confirmation" }, "prompt": { "type": "string", "minLength": 1, "maxLength": 240 } } }
+      ]
+    },
+    "AssertionResult": {
+      "type": "object", "additionalProperties": false, "required": ["schemaVersion", "assertionId", "status", "verifiedAt"],
+      "properties": { "schemaVersion": { "const": 1 }, "assertionId": { "$ref": "#/$defs/uuid" }, "status": { "enum": ["verified", "failed", "confirmation-required"] }, "reasonCode": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" }, "observed": { "type": "string", "maxLength": 1000 }, "evidenceRefs": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 500 } }, "verifiedAt": { "$ref": "#/$defs/timestamp" } }
+    },
     "StepBase": {
       "type": "object",
       "required": ["id", "action", "name", "expectedOutcome"],
@@ -120,7 +136,8 @@
         "id": { "$ref": "#/$defs/uuid" },
         "action": { "enum": ["navigate", "wait", "read", "select", "type", "download", "compare", "branch", "ask-approval", "stop"] },
         "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "expectedOutcome": { "type": "string", "minLength": 1, "maxLength": 240 }
+        "expectedOutcome": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "assertions": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/WorkflowAssertion" } }
       }
     },
     "NavigateStep": {
@@ -221,7 +238,8 @@
         "description": { "type": "string", "maxLength": 1000 },
         "allowedDomains": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "$ref": "#/$defs/domain" } },
         "inputs": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/WorkflowInputDefinition" } },
-        "steps": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/WorkflowStep" } }
+        "steps": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/WorkflowStep" } },
+        "successCriteria": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/WorkflowAssertion" } }
       }
     },
     "RuntimeCapabilities": {
@@ -382,7 +400,8 @@
         "selectedLocator": { "$ref": "#/$defs/LocatorCandidate" }, "locatorConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "outputs": { "type": "object", "maxProperties": 100, "additionalProperties": { "type": "string", "maxLength": 10000 } },
         "evidenceRefs": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
-        "retryCount": { "type": "integer", "minimum": 0, "maximum": 10 }, "observedPage": { "$ref": "#/$defs/PageState" }
+        "retryCount": { "type": "integer", "minimum": 0, "maximum": 10 }, "observedPage": { "$ref": "#/$defs/PageState" },
+        "assertionResults": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/AssertionResult" } }
       }
     },
     "RunResult": {
@@ -393,7 +412,8 @@
         "schemaVersion": { "const": 1 }, "format": { "const": "doonce.run-result.v1" }, "runId": { "$ref": "#/$defs/uuid" }, "workflowId": { "$ref": "#/$defs/uuid" },
         "workflowVersion": { "type": "integer", "minimum": 1 }, "status": { "enum": ["completed", "paused", "failed", "cancelled"] },
         "reasonCode": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$" }, "stepResults": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/StepResult" } },
-        "startedAt": { "$ref": "#/$defs/timestamp" }, "finishedAt": { "$ref": "#/$defs/timestamp" }
+        "startedAt": { "$ref": "#/$defs/timestamp" }, "finishedAt": { "$ref": "#/$defs/timestamp" },
+        "assertionResults": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/AssertionResult" } }
       }
     },
     "RepairOperation": {

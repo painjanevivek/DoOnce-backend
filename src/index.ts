@@ -15,6 +15,9 @@ import { CaptureWorkflowCompiler } from "./compiler/capture-workflow-compiler.js
 import { CaptureCompilationService } from "./compiler/capture-compilation-service.js";
 import { PostgresRunStore } from "./runner/postgres-run-store.js";
 import { RunService } from "./runner/run-service.js";
+import { ArtifactService } from "./artifacts/artifact-service.js";
+import { FileSystemObjectStore } from "./artifacts/filesystem-object-store.js";
+import { PostgresArtifactMetadataStore } from "./artifacts/postgres-artifact-metadata-store.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -34,6 +37,9 @@ const canonicalWorkflowService = pool ? new CanonicalWorkflowService(new Postgre
 const captureService = pool ? new CaptureService(new PostgresCaptureStore(pool)) : undefined;
 const captureCompilationService = captureService && canonicalWorkflowService ? new CaptureCompilationService(captureService, new CaptureWorkflowCompiler(), canonicalWorkflowService) : undefined;
 const runService = pool ? new RunService(new PostgresRunStore(pool)) : undefined;
+const artifactStoragePath = process.env.ARTIFACT_STORAGE_PATH;
+const artifactSigningSecret = process.env.ARTIFACT_SIGNING_SECRET ?? sessionSecret;
+const artifactService = pool && artifactStoragePath && artifactSigningSecret ? new ArtifactService(new PostgresArtifactMetadataStore(pool), new FileSystemObjectStore(artifactStoragePath), artifactSigningSecret) : undefined;
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
@@ -42,6 +48,7 @@ const app = await buildServer({
   ...(captureCompilationService ? { captureCompilationService } : {}),
   ...(runReceiptStore ? { runReceiptStore } : {}),
   ...(runService ? { runService } : {}),
+  ...(artifactService ? { artifactService } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (pool) app.addHook("onClose", async () => pool.end());

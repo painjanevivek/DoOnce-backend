@@ -69,6 +69,16 @@ function validateWorkflowSemantics(workflow: WorkflowSpec): ValidationIssue[] {
       }
     }
   }
+  const assertionIds = new Set<string>();
+  const outputNames = new Set(workflow.steps.flatMap((step) => step.action === "read" ? [step.outputName] : []));
+  const groups = [...workflow.steps.flatMap((step, index) => (step.assertions ?? []).map((assertion, assertionIndex) => ({ assertion, path: `/steps/${index}/assertions/${assertionIndex}` }))), ...(workflow.successCriteria ?? []).map((assertion, index) => ({ assertion, path: `/successCriteria/${index}` }))];
+  for (const { assertion, path } of groups) {
+    if (assertionIds.has(assertion.id)) errors.push(issue("workflow.assertion_id_duplicate", `${path}/id`, "Every assertion needs a unique identifier."));
+    assertionIds.add(assertion.id);
+    if ("target" in assertion && !workflow.allowedDomains.includes(assertion.target.domain)) errors.push(issue("workflow.assertion_domain_not_allowed", `${path}/target/domain`, "The assertion target must use an approved workflow domain."));
+    if (assertion.kind === "file-downloaded" && assertion.minBytes !== undefined && assertion.maxBytes !== undefined && assertion.minBytes > assertion.maxBytes) errors.push(issue("workflow.assertion_size_invalid", path, "The minimum download size cannot exceed the maximum size."));
+    if (assertion.kind === "extracted-value" && !outputNames.has(assertion.outputName)) errors.push(issue("workflow.assertion_output_missing", `${path}/outputName`, "The assertion must reference an output produced by a read step."));
+  }
   return errors;
 }
 

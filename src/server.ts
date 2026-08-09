@@ -23,6 +23,7 @@ import { CaptureConflictError, CaptureInputError, CaptureService } from "./captu
 import { CaptureCompilationNotFoundError, CaptureCompilationService } from "./compiler/capture-compilation-service.js";
 import { CaptureCompilationError } from "./compiler/capture-workflow-compiler.js";
 import { RunAccessError, RunConflictError, RunInputError, RunService } from "./runner/run-service.js";
+import { ArtifactInputError, ArtifactNotFoundError, ArtifactService } from "./artifacts/artifact-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -41,6 +42,7 @@ export interface ServerOptions {
   extensionOrigins?: string[];
   runReceiptStore?: LocalDemoReceiptStore;
   runService?: RunService;
+  artifactService?: ArtifactService;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
 }
@@ -574,6 +576,15 @@ export async function buildServer(options: ServerOptions = {}) {
     catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
   });
 
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id/timeline", async (request, reply) => {
+    const auth = options.authService; const runs = options.runService;
+    if (!auth || !runs) return reply.code(503).send({ error: "Workflow execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { const timeline = await runs.timeline(user, request.params.id); return timeline ? { timeline } : reply.code(404).send({ error: "Run not found." }); }
+    catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
   app.post<{ Params: { id: string } }>("/api/v1/runs/:id/cancel", async (request, reply) => {
     if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
     const auth = options.authService; const runs = options.runService;
@@ -582,6 +593,45 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     try { const run = await runs.cancel(user, request.params.id); return run ? { run } : reply.code(404).send({ error: "Run not found." }); }
     catch (error) { if (error instanceof RunAccessError) return reply.code(403).send({ error: error.message }); if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/runs/:id/artifacts", { bodyLimit: 7_000_000, config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins) && !isExtensionOrigin(request.headers.origin ?? "")) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService; const artifacts = options.artifactService;
+    if (!auth || !artifacts) return reply.code(503).send({ error: "Artifact storage is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? (options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return reply.code(201).send({ artifact: await artifacts.create(user, request.params.id, request.body) }); }
+    catch (error) { if (error instanceof ArtifactInputError) return reply.code(400).send({ error: error.message, code: "artifact.invalid" }); throw error; }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id/artifacts", async (request, reply) => {
+    const auth = options.authService; const artifacts = options.artifactService;
+    if (!auth || !artifacts) return reply.code(503).send({ error: "Artifact storage is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return { artifacts: await artifacts.list(user, request.params.id) }; }
+    catch (error) { if (error instanceof ArtifactInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Params: { id: string }; Body: { lifetimeSeconds?: unknown } }>("/api/v1/artifacts/:id/download-link", { schema: { body: { type: "object", additionalProperties: false, properties: { lifetimeSeconds: { type: "integer", minimum: 30, maximum: 3600 } } } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService; const artifacts = options.artifactService;
+    if (!auth || !artifacts) return reply.code(503).send({ error: "Artifact storage is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { const grant = await artifacts.createDownloadGrant(user, request.params.id, typeof request.body.lifetimeSeconds === "number" ? request.body.lifetimeSeconds : undefined); return { ...grant, url: `/api/v1/artifact-downloads/${grant.token}` }; }
+    catch (error) { if (error instanceof ArtifactNotFoundError) return reply.code(404).send({ error: error.message }); if (error instanceof ArtifactInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.get<{ Params: { token: string } }>("/api/v1/artifact-downloads/:token", async (request, reply) => {
+    const artifacts = options.artifactService;
+    if (!artifacts) return reply.code(503).send({ error: "Artifact storage is not configured." });
+    try {
+      const download = await artifacts.download(request.params.token);
+      reply.header("content-type", download.artifact.contentType).header("content-length", download.artifact.byteSize).header("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(download.artifact.fileName)}`);
+      return reply.send(Buffer.from(download.bytes));
+    } catch (error) { if (error instanceof ArtifactInputError || error instanceof ArtifactNotFoundError) return reply.code(404).send({ error: "Artifact link is invalid or expired." }); throw error; }
   });
 
   app.post<{ Body: unknown }>("/api/v1/extension/runs/claim", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {

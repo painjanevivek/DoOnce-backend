@@ -39,6 +39,7 @@ class MemoryWorkflowStore implements CanonicalWorkflowStore {
   public async listVersions(): Promise<[]> { return []; }
   public async updateDraft(): Promise<{ status: "missing" }> { return { status: "missing" }; }
   public async createNextDraft(): Promise<{ status: "missing" }> { return { status: "missing" }; }
+  public async hasPassingTestEvidence(): Promise<boolean> { return true; }
   public async publishDraft(): Promise<{ status: "missing" }> { return { status: "missing" }; }
 }
 
