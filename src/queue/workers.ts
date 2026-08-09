@@ -5,6 +5,7 @@ import type { HostedExecutor } from "../hosted/playwright-executor.js";
 import type { SessionProfileStore } from "../sessions/session-profile-service.js";
 import type { ScheduleService } from "../scheduling/schedule-service.js";
 import type { ExecutionRun, RunDispatcher, RunService } from "../runner/run-service.js";
+import type { VideoService } from "../video/video-service.js";
 import type { JobQueue } from "./job-queue.js";
 
 interface UserPayload {
@@ -19,6 +20,7 @@ interface HostedRunPayload extends UserPayload {
 }
 
 interface AuthoringPayload extends UserPayload { jobId: string }
+interface VideoAnalysisPayload extends UserPayload { videoImportId: string }
 
 type ScheduleExpansionPayload = UserPayload;
 
@@ -49,6 +51,7 @@ export class DurableWorkers {
     private readonly executor: HostedExecutor,
     private readonly authoring?: AuthoringService,
     private readonly artifacts?: ArtifactService,
+    private readonly videos?: VideoService,
   ) {}
 
   public async start(): Promise<void> {
@@ -58,6 +61,12 @@ export class DurableWorkers {
       await this.authoring?.process(fromPayload(job.data), job.data.jobId);
     }, 2);
     if (this.artifacts) await this.queue.work<UserPayload>("artifact-cleanup", async (job) => this.cleanupArtifacts(job.data), 1);
+    if (this.videos) {
+      await this.queue.work<VideoAnalysisPayload>("video-analysis", async (job) => {
+        await this.videos?.analyze(fromPayload(job.data), job.data.videoImportId);
+      }, 1);
+      await this.queue.work<UserPayload>("video-cleanup", async (job) => this.cleanupVideos(job.data), 1);
+    }
   }
 
   public enqueueAuthoring(user: AuthenticatedUser, jobId: string): Promise<string> {
@@ -75,6 +84,24 @@ export class DurableWorkers {
       startAfter: nextMinute(),
       retryLimit: 5,
       expireInSeconds: 180,
+    });
+  }
+
+  public enqueueVideoAnalysis(user: AuthenticatedUser, videoImportId: string): Promise<string> {
+    return this.queue.enqueue<VideoAnalysisPayload>("video-analysis", { ...toPayload(user), videoImportId }, {
+      idempotencyKey: `video-analysis:${videoImportId}`,
+      retryLimit: 2,
+      expireInSeconds: 600,
+    });
+  }
+
+  public registerVideoCleanup(user: AuthenticatedUser): Promise<string> {
+    const startAfter = nextDay();
+    return this.queue.enqueue("video-cleanup", toPayload(user), {
+      idempotencyKey: `video-cleanup:${user.tenantId}:${startAfter.toISOString().slice(0, 10)}`,
+      startAfter,
+      retryLimit: 5,
+      expireInSeconds: 3600,
     });
   }
 
@@ -117,6 +144,12 @@ export class DurableWorkers {
     const user = fromPayload(payload);
     await this.registerArtifactCleanup(user);
     await this.artifacts?.cleanup(user);
+  }
+
+  private async cleanupVideos(payload: UserPayload): Promise<void> {
+    const user = fromPayload(payload);
+    await this.registerVideoCleanup(user);
+    await this.videos?.cleanup(user);
   }
 }
 

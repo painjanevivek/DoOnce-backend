@@ -1,4 +1,4 @@
-export const queueNames = ["workflow-runs", "authoring-jobs", "repair-jobs", "artifact-cleanup", "schedule-expansion"] as const;
+export const queueNames = ["workflow-runs", "authoring-jobs", "repair-jobs", "artifact-cleanup", "schedule-expansion", "video-analysis", "video-cleanup"] as const;
 export type QueueName = typeof queueNames[number];
 export interface QueueJob<T> { id: string; name: QueueName; data: T; signal: AbortSignal }
 export interface EnqueueOptions { idempotencyKey: string; startAfter?: Date; retryLimit?: number; expireInSeconds?: number }

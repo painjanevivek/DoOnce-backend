@@ -31,6 +31,7 @@ import { SessionProfileAccessError, SessionProfileInputError, SessionProfileServ
 import type { JobQueue } from "./queue/job-queue.js";
 import type { DurableWorkers } from "./queue/workers.js";
 import { WebhookAccessError, WebhookAuthenticationError, WebhookInputError, WebhookService } from "./triggers/webhook-service.js";
+import { VideoAccessError, VideoConflictError, VideoInputError, VideoService } from "./video/video-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -59,6 +60,7 @@ export interface ServerOptions {
   webhookService?: WebhookService;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
+  videoService?: VideoService;
 }
 
 const sessionCookieName = "doonce_session";
@@ -83,6 +85,16 @@ function webhookError(error: unknown, reply: import("fastify").FastifyReply) {
   throw error;
 }
 
+function videoError(error: unknown, reply: import("fastify").FastifyReply) {
+  if (error instanceof VideoAccessError) return reply.code(403).send({ error: error.message, code: "video.access_denied" });
+  if (error instanceof VideoConflictError) {
+    if (error.expectedOffset !== undefined) reply.header("upload-offset", error.expectedOffset);
+    return reply.code(409).send({ error: error.message, code: "video.conflict", ...(error.expectedOffset !== undefined ? { expectedOffset: error.expectedOffset } : {}) });
+  }
+  if (error instanceof VideoInputError) return reply.code(422).send({ error: error.message, code: "video.invalid_input" });
+  throw error;
+}
+
 export async function buildServer(options: ServerOptions = {}) {
   const allowedOrigins = allowedOriginsFromEnvironment();
   const extensionOrigins = options.extensionOrigins ?? (process.env.DOONCE_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean);
@@ -99,6 +111,7 @@ export async function buildServer(options: ServerOptions = {}) {
     },
     trustProxy: false,
   });
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_request, body, done) => done(null, body));
 
   if (process.env.NODE_ENV !== "production") {
     await app.register(swagger, {
@@ -133,8 +146,9 @@ export async function buildServer(options: ServerOptions = {}) {
       callback(new Error("Origin is not allowed."), false);
     },
     credentials: true,
-    methods: ["GET", "POST", "PATCH", "DELETE"],
-    allowedHeaders: ["content-type", "authorization"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allowedHeaders: ["content-type", "authorization", "upload-offset"],
+    exposedHeaders: ["upload-offset"],
   });
   await app.register(cookie);
   await app.register(rateLimit, { global: false, max: 100, timeWindow: "1 minute" });
@@ -450,6 +464,112 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     try { const job = await authoring.cancel(user, request.params.id); return job ? { job } : reply.code(404).send({ error: "Authoring job not found." }); }
     catch (error) { if (error instanceof AuthoringAccessError) return reply.code(403).send({ error: error.message }); if (error instanceof AuthoringInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  const videoIdSchema = { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } as const;
+  app.post<{ Body: unknown }>("/api/v1/video-imports", {
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    schema: {
+      body: {
+        type: "object",
+        required: ["mode", "fileName", "contentType", "byteSize"],
+        additionalProperties: false,
+        properties: {
+          mode: { type: "string", enum: ["video-with-telemetry", "pure-video"] },
+          captureSessionId: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" },
+          fileName: { type: "string", minLength: 1, maxLength: 255 },
+          contentType: { type: "string", enum: ["video/mp4", "video/webm", "video/quicktime"] },
+          byteSize: { type: "integer", minimum: 1, maximum: 524288000 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService; const videos = options.videoService;
+    if (!auth || !videos) return reply.code(503).send({ error: "Video authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const video = await videos.create(user, request.body);
+      await options.durableWorkers?.registerVideoCleanup(user);
+      return reply.code(201).header("upload-offset", video.uploadedBytes).send({ video });
+    } catch (error) { return videoError(error, reply); }
+  });
+
+  app.put<{ Params: { id: string }; Headers: { "upload-offset"?: string }; Body: Buffer }>("/api/v1/video-imports/:id/chunks", {
+    bodyLimit: 8 * 1024 * 1024,
+    config: { rateLimit: { max: 180, timeWindow: "1 minute" } },
+    schema: { params: videoIdSchema },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService; const videos = options.videoService;
+    if (!auth || !videos) return reply.code(503).send({ error: "Video authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    const offset = Number(request.headers["upload-offset"]);
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "A valid upload offset and binary chunk are required." });
+    try {
+      const video = await videos.append(user, request.params.id, offset, request.body);
+      return reply.header("upload-offset", video.uploadedBytes).send({ video });
+    } catch (error) { return videoError(error, reply); }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/video-imports/:id/complete", { schema: { params: videoIdSchema } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService; const videos = options.videoService;
+    if (!auth || !videos) return reply.code(503).send({ error: "Video authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return { video: await videos.completeUpload(user, request.params.id) }; }
+    catch (error) { return videoError(error, reply); }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/video-imports/:id/analyze", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } }, schema: { params: videoIdSchema } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService; const videos = options.videoService;
+    if (!auth || !videos) return reply.code(503).send({ error: "Video authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const video = await videos.find(user, request.params.id);
+      if (!video) return reply.code(404).send({ error: "Video import not found." });
+      if (video.status !== "uploaded") return reply.code(409).send({ error: "Complete the upload before analysis.", code: "video.conflict" });
+      if (options.durableWorkers) await options.durableWorkers.enqueueVideoAnalysis(user, video.id);
+      else queueMicrotask(() => { void videos.analyze(user, video.id).catch((error: unknown) => request.log.error({ name: error instanceof Error ? error.name : "UnknownError" }, "Video analysis worker failed")); });
+      return reply.code(202).send({ video });
+    } catch (error) { return videoError(error, reply); }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/v1/video-imports/:id", { schema: { params: videoIdSchema } }, async (request, reply) => {
+    const auth = options.authService; const videos = options.videoService;
+    if (!auth || !videos) return reply.code(503).send({ error: "Video authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { const video = await videos.find(user, request.params.id); return video ? { video } : reply.code(404).send({ error: "Video import not found." }); }
+    catch (error) { return videoError(error, reply); }
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/video-imports/:id/calibrate", { schema: { params: videoIdSchema, body: { type: "object" } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService; const videos = options.videoService;
+    if (!auth || !videos) return reply.code(503).send({ error: "Video authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return { video: await videos.calibrate(user, request.params.id, request.body) }; }
+    catch (error) { return videoError(error, reply); }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/video-imports/:id/compile", { schema: { params: videoIdSchema } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService; const videos = options.videoService;
+    if (!auth || !videos) return reply.code(503).send({ error: "Video authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return reply.code(201).send({ video: await videos.compile(user, request.params.id) }); }
+    catch (error) { return videoError(error, reply); }
   });
 
   app.post<{ Params: { id: string } }>("/api/v1/runs/:id/repair-proposals", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {

@@ -99,6 +99,14 @@ Managed runs require `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`. Each run launches a 
 
 Browser session APIs accept secret-manager references such as `env://FINANCE_SESSION`; they never accept or return raw cookies. The environment provider expects the referenced variable to contain Playwright storage-state JSON. Vault, AWS Secrets Manager, and GCP Secret Manager references require a corresponding `SecretProvider` adapter in the worker deployment.
 
+## Video-assisted authoring
+
+Set `VIDEO_AUTHORING_ENABLED=true` and `VIDEO_STORAGE_PATH` to enable resumable MP4, WebM, and QuickTime imports. The API accepts strict-offset chunks up to 8 MiB, streams the final SHA-256 verification, validates the decoded duration, resolution, and frame rate, and sends analysis to the durable queue when `JOB_DATABASE_URL` is configured.
+
+The worker expects `ffprobe`, `ffmpeg`, and `tesseract` on `PATH`. Override them with `FFPROBE_EXECUTABLE_PATH`, `FFMPEG_EXECUTABLE_PATH`, and `TESSERACT_EXECUTABLE_PATH`. Video with synchronized recorder telemetry uses the recorder actions as the authoritative source. Video-only analysis emits low-confidence visual observations; coordinates and OCR are never compiled into executable locators. A user must calibrate each included interaction with a semantic locator before the normal WorkflowSpec draft is created.
+
+Temporary media is tenant-scoped and retained for 24 hours. The `video-cleanup` queue removes the binary before deleting its metadata; monitor cleanup failures so expired media cannot accumulate silently.
+
 ## Pre-launch policy drafts
 
 Internal source drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). The frontend may show matching, clearly labelled pre-launch summaries at `/privacy` and `/terms`; they are not final notices or contractual terms. Final policies cannot be published until the company, jurisdiction, and data-processing placeholders are approved.

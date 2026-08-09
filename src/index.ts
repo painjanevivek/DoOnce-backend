@@ -33,6 +33,10 @@ import { EnvironmentSecretProvider } from "./hosted/secret-provider.js";
 import { PlaywrightExecutor } from "./hosted/playwright-executor.js";
 import { PostgresWebhookStore } from "./triggers/postgres-webhook-store.js";
 import { WebhookService } from "./triggers/webhook-service.js";
+import { FfmpegOcrObservationProvider, FfprobeMediaInspector } from "./video/media-analysis.js";
+import { PostgresVideoImportStore } from "./video/postgres-video-import-store.js";
+import { FileSystemVideoStore } from "./video/resumable-video-store.js";
+import { VideoService } from "./video/video-service.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -66,8 +70,19 @@ const artifactStoragePath = process.env.ARTIFACT_STORAGE_PATH;
 const artifactSigningSecret = process.env.ARTIFACT_SIGNING_SECRET ?? sessionSecret;
 const artifactService = pool && artifactStoragePath && artifactSigningSecret ? new ArtifactService(new PostgresArtifactMetadataStore(pool), new FileSystemObjectStore(artifactStoragePath), artifactSigningSecret) : undefined;
 const authoringService = pool && canonicalWorkflowService && process.env.TEXT_AUTHORING_ENABLED === "true" ? new AuthoringService(new PostgresAuthoringJobStore(pool), new TemplateAuthoringProvider(), canonicalWorkflowService) : undefined;
+const videoStoragePath = process.env.VIDEO_STORAGE_PATH;
+const videoService = pool && canonicalWorkflowService && videoStoragePath && process.env.VIDEO_AUTHORING_ENABLED === "true"
+  ? new VideoService(
+    new PostgresVideoImportStore(pool),
+    new FileSystemVideoStore(videoStoragePath),
+    new FfprobeMediaInspector(),
+    new FfmpegOcrObservationProvider(),
+    canonicalWorkflowService,
+    captureCompilationService,
+  )
+  : undefined;
 const durableWorkers = jobQueue && runService && scheduleService && sessionProfileStore
-  ? new DurableWorkers(jobQueue, runService, scheduleService, sessionProfileStore, new PlaywrightExecutor(secretProvider), authoringService, artifactService)
+  ? new DurableWorkers(jobQueue, runService, scheduleService, sessionProfileStore, new PlaywrightExecutor(secretProvider), authoringService, artifactService, videoService)
   : undefined;
 if (durableWorkers) await durableWorkers.start();
 const repairService = pool && process.env.REPAIR_ENABLED === "true" ? new RepairService(new PostgresRepairStore(pool)) : undefined;
@@ -87,6 +102,7 @@ const app = await buildServer({
   ...(jobQueue ? { jobQueue } : {}),
   ...(durableWorkers ? { durableWorkers } : {}),
   ...(webhookService ? { webhookService } : {}),
+  ...(videoService ? { videoService } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (jobQueue || pool) app.addHook("onClose", async () => {
