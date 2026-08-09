@@ -1,16 +1,19 @@
 import type { Pool } from "pg";
 import type { AuthenticatedUser } from "../auth/auth-service.js";
-import type { RunRequest, RunResult, StepResult, WorkflowSpec } from "../contracts/protocol.js";
+import type { ExecutorKind, RunRequest, RunResult, StepResult, WorkflowSpec } from "../contracts/protocol.js";
 import type { SqlClient } from "../database/migrator.js";
 import { withTenantTransaction, type TenantContext } from "../database/tenant-context.js";
-import type { ExecutionRun, PublishedWorkflow, RunCheckpoint, RunStore, RunTimeline, RunTimelineArtifact, RunTimelineEvent } from "./run-service.js";
+import type { ExecutionRun, PublishedWorkflow, RunCheckpoint, RunCreationMetadata, RunStore, RunTimeline, RunTimelineArtifact, RunTimelineEvent } from "./run-service.js";
 
 interface RunRow extends Record<string, unknown> {
-  id: string; workflow_id: string; workflow_version: number; status: ExecutionRun["status"]; executor: "extension"; requested_at: Date | string;
+  id: string; workflow_id: string; workflow_version: number; status: ExecutionRun["status"]; executor: ExecutorKind; requested_at: Date | string;
   started_at: Date | string | null; finished_at: Date | string | null; cancel_requested: boolean; current_step_index: number;
   step_results: StepResult[]; extension_version: string | null; lease_expires_at: Date | string | null; result: RunResult | null; request_digest: string;
   checkpoint: RunCheckpoint | null;
   workflow_checksum: string; mode: "test" | "production";
+  trigger_kind: ExecutionRun["triggerKind"];
+  session_profile_id: string | null;
+  queue_job_id: string | null;
 }
 
 export class PostgresRunStore implements RunStore {
@@ -28,20 +31,24 @@ export class PostgresRunStore implements RunStore {
     });
   }
 
-  public async create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }> {
+  public async create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string, metadata: RunCreationMetadata = { triggerKind: "manual", sessionLocation: "user-browser" }): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }> {
     return this.withUser(user, async (db) => {
       const result = await db.query<RunRow>(
-        `INSERT INTO workflow_runs (id, tenant_id, requested_by, workflow_id, workflow_version, workflow_checksum, mode, executor, inputs, workflow_definition, idempotency_key, request_digest, requested_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'extension', $8::jsonb, $9::jsonb, $10, $11, $12)
+        `INSERT INTO workflow_runs (id, tenant_id, requested_by, workflow_id, workflow_version, workflow_checksum, mode, executor, trigger_kind, session_profile_id, inputs, workflow_definition, idempotency_key, request_digest, requested_at)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15
+         WHERE $10::uuid IS NULL OR EXISTS (
+           SELECT 1 FROM browser_session_profiles
+           WHERE id = $10 AND tenant_id = $2 AND location = 'managed' AND enabled = true
+         )
          ON CONFLICT (tenant_id, requested_by, idempotency_key) DO NOTHING
          RETURNING *`,
-        [request.runId, user.tenantId, user.userId, request.workflowId, request.workflowVersion, workflow.checksum, workflow.status === "draft" ? "test" : "production", JSON.stringify(request.inputs), JSON.stringify(workflow.spec), idempotencyKey, requestDigest, request.requestedAt],
+        [request.runId, user.tenantId, user.userId, request.workflowId, request.workflowVersion, workflow.checksum, workflow.status === "draft" ? "test" : "production", request.executor, metadata.triggerKind, metadata.sessionProfileId ?? null, JSON.stringify(request.inputs), JSON.stringify(workflow.spec), idempotencyKey, requestDigest, request.requestedAt],
       );
       const inserted = result.rows[0];
       if (inserted) { await db.query("INSERT INTO run_events (run_id, tenant_id, event_type, metadata) VALUES ($1, $2, 'run.queued', $3::jsonb)", [inserted.id, user.tenantId, JSON.stringify({ mode: inserted.mode, workflowChecksum: inserted.workflow_checksum })]); return { created: true, run: mapRun(inserted), requestDigest: inserted.request_digest }; }
       const existing = await db.query<RunRow>("SELECT * FROM workflow_runs WHERE tenant_id = $1 AND requested_by = $2 AND idempotency_key = $3", [user.tenantId, user.userId, idempotencyKey]);
       const row = existing.rows[0];
-      if (!row) throw new Error("Idempotent run lookup failed.");
+      if (!row) throw new Error("The selected managed browser session is unavailable.");
       return { created: false, run: mapRun(row), requestDigest: row.request_digest };
     });
   }
@@ -74,7 +81,7 @@ export class PostgresRunStore implements RunStore {
       const selected = await db.query<RunRow & { inputs: Record<string, string>; workflow_definition: WorkflowSpec }>(
         `WITH candidate AS (
            SELECT id FROM workflow_runs
-           WHERE status IN ('queued', 'running') AND cancel_requested = false
+           WHERE executor = 'extension' AND status IN ('queued', 'running') AND cancel_requested = false
              AND (status = 'queued' OR lease_expires_at IS NULL OR lease_expires_at < now())
            ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1
          )
@@ -87,8 +94,50 @@ export class PostgresRunStore implements RunStore {
       if (!row) return undefined;
       await db.query("INSERT INTO executor_leases (run_id, tenant_id, executor, executor_version, token_hash, expires_at) VALUES ($1, $2, 'extension', $3, $4, $5) ON CONFLICT (run_id) DO UPDATE SET executor_version = EXCLUDED.executor_version, token_hash = EXCLUDED.token_hash, claimed_at = now(), heartbeat_at = now(), expires_at = EXCLUDED.expires_at, released_at = NULL", [row.id, user.tenantId, input.extensionVersion, input.leaseTokenHash, input.leaseExpiresAt]);
       await db.query("INSERT INTO run_events (run_id, tenant_id, event_type, metadata) VALUES ($1, $2, 'run.claimed', $3::jsonb)", [row.id, user.tenantId, JSON.stringify({ executorVersion: input.extensionVersion, capabilities: input.capabilities })]);
-      const request: RunRequest = { schemaVersion: 1, runId: row.id, workflowId: row.workflow_id, workflowVersion: row.workflow_version, executor: "extension", inputs: row.inputs, requestedAt: iso(row.requested_at) };
+      const request: RunRequest = { schemaVersion: 1, runId: row.id, workflowId: row.workflow_id, workflowVersion: row.workflow_version, executor: row.executor, inputs: row.inputs, requestedAt: iso(row.requested_at) };
       return { run: mapRun(row), request, workflow: row.workflow_definition, ...(row.checkpoint ? { checkpoint: row.checkpoint } : {}) };
+    });
+  }
+
+  public claimHosted(user: AuthenticatedUser, input: { runId: string; executorVersion: string; leaseTokenHash: string; leaseExpiresAt: string }): Promise<{ run: ExecutionRun; request: RunRequest; workflow: WorkflowSpec; checkpoint?: RunCheckpoint } | undefined> {
+    return this.withUser(user, async (db) => {
+      const row = (await db.query<RunRow & { inputs: Record<string, string>; workflow_definition: WorkflowSpec }>(
+        `UPDATE workflow_runs SET status = 'running', started_at = COALESCE(started_at, now()),
+           extension_version = $2, extension_capabilities = $3::jsonb, lease_token_hash = $4,
+           lease_expires_at = $5, heartbeat_at = now()
+         WHERE id = $1 AND executor = 'hosted-browser' AND cancel_requested = false
+           AND status IN ('queued', 'running') AND (status = 'queued' OR lease_expires_at IS NULL OR lease_expires_at < now())
+         RETURNING *`,
+        [input.runId, input.executorVersion, JSON.stringify(["workflow-spec-v1", "isolated-context", "network-allowlist"]), input.leaseTokenHash, input.leaseExpiresAt],
+      )).rows[0];
+      if (!row) return undefined;
+      await db.query(
+        `INSERT INTO executor_leases (run_id, tenant_id, executor, executor_version, token_hash, expires_at)
+         VALUES ($1, $2, 'hosted-browser', $3, $4, $5)
+         ON CONFLICT (run_id) DO UPDATE SET executor = 'hosted-browser', executor_version = EXCLUDED.executor_version,
+           token_hash = EXCLUDED.token_hash, claimed_at = now(), heartbeat_at = now(), expires_at = EXCLUDED.expires_at, released_at = NULL`,
+        [row.id, user.tenantId, input.executorVersion, input.leaseTokenHash, input.leaseExpiresAt],
+      );
+      await db.query(
+        "INSERT INTO run_events (run_id, tenant_id, event_type, metadata) VALUES ($1, $2, 'run.claimed', $3::jsonb)",
+        [row.id, user.tenantId, JSON.stringify({ executorVersion: input.executorVersion, isolation: "browser-context" })],
+      );
+      const request: RunRequest = {
+        schemaVersion: 1,
+        runId: row.id,
+        workflowId: row.workflow_id,
+        workflowVersion: row.workflow_version,
+        executor: row.executor,
+        inputs: row.inputs,
+        requestedAt: iso(row.requested_at),
+      };
+      return { run: mapRun(row), request, workflow: row.workflow_definition, ...(row.checkpoint ? { checkpoint: row.checkpoint } : {}) };
+    });
+  }
+
+  public attachQueueJob(user: AuthenticatedUser, runId: string, queueJobId: string): Promise<void> {
+    return this.withUser(user, async (db) => {
+      await db.query("UPDATE workflow_runs SET queue_job_id = $2 WHERE id = $1", [runId, queueJobId]);
     });
   }
 
@@ -140,10 +189,13 @@ export class PostgresRunStore implements RunStore {
 function mapRun(row: RunRow): ExecutionRun {
   return {
     id: row.id, workflowId: row.workflow_id, workflowVersion: row.workflow_version, workflowChecksum: row.workflow_checksum, mode: row.mode, status: row.status, executor: row.executor,
+    triggerKind: row.trigger_kind,
     requestedAt: iso(row.requested_at), cancelRequested: row.cancel_requested, currentStepIndex: row.current_step_index,
     stepResults: row.step_results ?? [],
     ...(row.started_at ? { startedAt: iso(row.started_at) } : {}), ...(row.finished_at ? { finishedAt: iso(row.finished_at) } : {}),
     ...(row.extension_version ? { extensionVersion: row.extension_version } : {}), ...(row.lease_expires_at ? { leaseExpiresAt: iso(row.lease_expires_at) } : {}),
+    ...(row.session_profile_id ? { sessionProfileId: row.session_profile_id } : {}),
+    ...(row.queue_job_id ? { queueJobId: row.queue_job_id } : {}),
     ...(row.result ? { result: row.result } : {}),
   };
 }

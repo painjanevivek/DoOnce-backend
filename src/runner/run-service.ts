@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { AuthenticatedUser, MembershipRole } from "../auth/auth-service.js";
-import type { RunRequest, RunResult, StepResult, WorkflowSpec } from "../contracts/protocol.js";
+import type { ExecutorKind, RunRequest, RunResult, StepResult, WorkflowSpec } from "../contracts/protocol.js";
 import { validateProtocolContract } from "../contracts/validation.js";
+import { ExecutionRoutingError, routeExecution, type SessionLocation, type TriggerKind } from "../triggers/execution-router.js";
 
 export type RunStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
@@ -13,7 +14,10 @@ export interface ExecutionRun {
   workflowChecksum: string;
   mode: "test" | "production";
   status: RunStatus;
-  executor: "extension";
+  executor: ExecutorKind;
+  triggerKind: TriggerKind;
+  sessionProfileId?: string;
+  queueJobId?: string;
   requestedAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -34,15 +38,28 @@ export interface RunTimeline { run: ExecutionRun; steps: StepResult[]; events: R
 
 export interface RunStore {
   findExecutable(user: AuthenticatedUser, workflowId: string, mode: "test" | "production"): Promise<PublishedWorkflow | undefined>;
-  create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }>;
+  create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string, metadata?: RunCreationMetadata): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }>;
   list(user: AuthenticatedUser, limit: number): Promise<ExecutionRun[]>;
   find(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined>;
   timeline(user: AuthenticatedUser, runId: string): Promise<RunTimeline | undefined>;
   claim(user: AuthenticatedUser, input: { extensionVersion: string; capabilities: string[]; leaseTokenHash: string; leaseExpiresAt: string }): Promise<{ run: ExecutionRun; request: RunRequest; workflow: WorkflowSpec; checkpoint?: RunCheckpoint } | undefined>;
+  claimHosted?(user: AuthenticatedUser, input: { runId: string; executorVersion: string; leaseTokenHash: string; leaseExpiresAt: string }): Promise<{ run: ExecutionRun; request: RunRequest; workflow: WorkflowSpec; checkpoint?: RunCheckpoint } | undefined>;
+  attachQueueJob?(user: AuthenticatedUser, runId: string, queueJobId: string): Promise<void>;
   heartbeat(user: AuthenticatedUser, runId: string, leaseTokenHash: string, leaseExpiresAt: string): Promise<ExecutionRun | undefined>;
   checkpoint(user: AuthenticatedUser, runId: string, leaseTokenHash: string, checkpoint: RunCheckpoint, leaseExpiresAt: string): Promise<ExecutionRun | undefined>;
   finish(user: AuthenticatedUser, runId: string, leaseTokenHash: string, result: RunResult): Promise<ExecutionRun | undefined>;
   cancel(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined>;
+}
+
+export interface RunCreationMetadata {
+  triggerKind: TriggerKind;
+  sessionLocation: SessionLocation;
+  sessionProfileId?: string;
+}
+
+export interface RunDispatcher {
+  dispatch(user: AuthenticatedUser, run: ExecutionRun): Promise<string>;
+  cancel?(run: ExecutionRun): Promise<boolean>;
 }
 
 export class RunInputError extends Error {}
@@ -50,7 +67,11 @@ export class RunAccessError extends Error {}
 export class RunConflictError extends Error {}
 
 export class RunService {
-  public constructor(private readonly store: RunStore, private readonly leaseMs = 45_000) {
+  public constructor(
+    private readonly store: RunStore,
+    private readonly leaseMs = 45_000,
+    private readonly dispatcher?: RunDispatcher,
+  ) {
     if (!Number.isInteger(leaseMs) || leaseMs < 10_000 || leaseMs > 300_000) throw new Error("Run lease must be between 10 seconds and 5 minutes.");
   }
 
@@ -60,11 +81,33 @@ export class RunService {
     const executable = await this.store.findExecutable(user, parsed.workflowId, parsed.mode);
     if (!executable) throw new RunInputError(parsed.mode === "test" ? "An editable workflow draft is required before starting a test run." : "A published workflow version is required before starting a run.");
     const inputs = resolveInputs(executable.spec, parsed.inputs);
+    let route;
+    try {
+      route = routeExecution(executable.spec, parsed);
+    } catch (error) {
+      if (error instanceof ExecutionRoutingError) throw new RunInputError(error.message);
+      throw error;
+    }
+    if (route.executor === "hosted-browser" && !parsed.sessionProfileId) {
+      throw new RunInputError("Managed execution requires a browser session profile.");
+    }
+    if (route.executor === "extension" && parsed.sessionProfileId) {
+      throw new RunInputError("A managed browser session cannot be attached to a local extension run.");
+    }
     const requestedAt = new Date().toISOString();
-    const request: RunRequest = { schemaVersion: 1, runId: randomUUID(), workflowId: executable.workflowId, workflowVersion: executable.version, executor: "extension", inputs, requestedAt };
-    const requestDigest = digest({ workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: parsed.mode, executor: request.executor, inputs });
-    const stored = await this.store.create(user, request, executable, parsed.idempotencyKey, requestDigest);
+    const request: RunRequest = { schemaVersion: 1, runId: randomUUID(), workflowId: executable.workflowId, workflowVersion: executable.version, executor: route.executor, inputs, requestedAt };
+    const metadata: RunCreationMetadata = {
+      triggerKind: route.triggerKind,
+      sessionLocation: route.sessionLocation,
+      ...(parsed.sessionProfileId ? { sessionProfileId: parsed.sessionProfileId } : {}),
+    };
+    const requestDigest = digest({ workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: parsed.mode, executor: request.executor, triggerKind: route.triggerKind, sessionProfileId: parsed.sessionProfileId, inputs });
+    const stored = await this.store.create(user, request, executable, parsed.idempotencyKey, requestDigest, metadata);
     if (!stored.created && stored.requestDigest !== requestDigest) throw new RunConflictError("This idempotency key was already used for a different run request.");
+    if (stored.created && stored.run.executor === "hosted-browser" && this.dispatcher) {
+      const queueJobId = await this.dispatcher.dispatch(user, stored.run);
+      await this.store.attachQueueJob?.(user, stored.run.id, queueJobId);
+    }
     return { created: stored.created, run: stored.run };
   }
 
@@ -80,6 +123,20 @@ export class RunService {
     const leaseToken = randomBytes(32).toString("base64url");
     const leaseExpiresAt = new Date(Date.now() + this.leaseMs).toISOString();
     const claimed = await this.store.claim(user, { ...parsed, leaseTokenHash: hashLease(leaseToken), leaseExpiresAt });
+    return claimed ? { ...claimed, leaseToken, leaseExpiresAt } : undefined;
+  }
+
+  public async claimHosted(user: AuthenticatedUser, runId: string, executorVersion: string): Promise<ClaimedRun | undefined> {
+    if (!this.store.claimHosted) throw new Error("Hosted execution is not configured.");
+    if (!/^\d+\.\d+\.\d+$/.test(executorVersion)) throw new RunInputError("Hosted executor version is invalid.");
+    const leaseToken = randomBytes(32).toString("base64url");
+    const leaseExpiresAt = new Date(Date.now() + this.leaseMs).toISOString();
+    const claimed = await this.store.claimHosted(user, {
+      runId: requireUuid(runId),
+      executorVersion,
+      leaseTokenHash: hashLease(leaseToken),
+      leaseExpiresAt,
+    });
     return claimed ? { ...claimed, leaseToken, leaseExpiresAt } : undefined;
   }
 
@@ -107,19 +164,28 @@ export class RunService {
     return this.store.finish(user, runId, hashLease(leaseToken), structuredClone(result));
   }
 
-  public cancel(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined> {
+  public async cancel(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined> {
     requireRunRole(user.role);
-    return this.store.cancel(user, requireUuid(runId));
+    const id = requireUuid(runId);
+    const existing = await this.store.find(user, id);
+    const cancelled = await this.store.cancel(user, id);
+    if (existing?.executor === "hosted-browser" && existing.queueJobId) await this.dispatcher?.cancel?.(existing);
+    return cancelled;
   }
 }
 
-function parseCreateInput(value: unknown): { workflowId: string; inputs: Record<string, string>; idempotencyKey: string; mode: "test" | "production" } {
-  if (!isRecord(value) || Object.keys(value).some((key) => !["workflowId", "inputs", "idempotencyKey", "mode"].includes(key))) throw new RunInputError("The run request is invalid.");
+function parseCreateInput(value: unknown): { workflowId: string; inputs: Record<string, string>; idempotencyKey: string; mode: "test" | "production"; triggerKind: TriggerKind; sessionLocation: SessionLocation; sessionProfileId?: string } {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["workflowId", "inputs", "idempotencyKey", "mode", "triggerKind", "sessionLocation", "sessionProfileId"].includes(key))) throw new RunInputError("The run request is invalid.");
   const workflowId = requireUuid(value.workflowId);
   if (!isRecord(value.inputs) || !Object.values(value.inputs).every((item) => typeof item === "string" && item.length <= 10_000)) throw new RunInputError("Run inputs must be text values.");
   if (typeof value.idempotencyKey !== "string" || !/^[a-zA-Z0-9._:-]{8,128}$/.test(value.idempotencyKey)) throw new RunInputError("Provide a valid idempotency key.");
   if (value.mode !== undefined && value.mode !== "test" && value.mode !== "production") throw new RunInputError("Run mode must be test or production.");
-  return { workflowId, inputs: value.inputs as Record<string, string>, idempotencyKey: value.idempotencyKey, mode: value.mode === "test" ? "test" : "production" };
+  if (value.triggerKind !== undefined && !["manual", "api", "webhook", "schedule"].includes(String(value.triggerKind))) throw new RunInputError("Run trigger kind is invalid.");
+  if (value.sessionLocation !== undefined && value.sessionLocation !== "user-browser" && value.sessionLocation !== "managed") throw new RunInputError("Session location is invalid.");
+  const triggerKind = (value.triggerKind ?? "manual") as TriggerKind;
+  const sessionLocation = (value.sessionLocation ?? "user-browser") as SessionLocation;
+  const sessionProfileId = value.sessionProfileId === undefined ? undefined : requireUuid(value.sessionProfileId);
+  return { workflowId, inputs: value.inputs as Record<string, string>, idempotencyKey: value.idempotencyKey, mode: value.mode === "test" ? "test" : "production", triggerKind, sessionLocation, ...(sessionProfileId ? { sessionProfileId } : {}) };
 }
 
 function resolveInputs(spec: WorkflowSpec, supplied: Record<string, string>): Record<string, string> {

@@ -26,6 +26,11 @@ import { RunAccessError, RunConflictError, RunInputError, RunService } from "./r
 import { ArtifactInputError, ArtifactNotFoundError, ArtifactService } from "./artifacts/artifact-service.js";
 import { AuthoringAccessError, AuthoringConflictError, AuthoringInputError, AuthoringLimitError, AuthoringService } from "./authoring/authoring-service.js";
 import { RepairAccessError, RepairConflictError, RepairInputError, RepairService } from "./repair/repair-service.js";
+import { ScheduleAccessError, ScheduleInputError, ScheduleService } from "./scheduling/schedule-service.js";
+import { SessionProfileAccessError, SessionProfileInputError, SessionProfileService } from "./sessions/session-profile-service.js";
+import type { JobQueue } from "./queue/job-queue.js";
+import type { DurableWorkers } from "./queue/workers.js";
+import { WebhookAccessError, WebhookAuthenticationError, WebhookInputError, WebhookService } from "./triggers/webhook-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -47,6 +52,11 @@ export interface ServerOptions {
   artifactService?: ArtifactService;
   authoringService?: AuthoringService;
   repairService?: RepairService;
+  scheduleService?: ScheduleService;
+  sessionProfileService?: SessionProfileService;
+  jobQueue?: JobQueue;
+  durableWorkers?: DurableWorkers;
+  webhookService?: WebhookService;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
 }
@@ -57,6 +67,19 @@ function repairError(error: unknown, reply: import("fastify").FastifyReply) {
   if (error instanceof RepairAccessError) return reply.code(403).send({ error: error.message, code: "repair.access_denied" });
   if (error instanceof RepairConflictError) return reply.code(409).send({ error: error.message, code: "repair.conflict" });
   if (error instanceof RepairInputError) return reply.code(422).send({ error: error.message, code: "repair.invalid_input" });
+  throw error;
+}
+
+function scheduleError(error: unknown, reply: import("fastify").FastifyReply) {
+  if (error instanceof ScheduleAccessError || error instanceof SessionProfileAccessError) return reply.code(403).send({ error: error.message });
+  if (error instanceof ScheduleInputError || error instanceof SessionProfileInputError) return reply.code(422).send({ error: error.message });
+  throw error;
+}
+
+function webhookError(error: unknown, reply: import("fastify").FastifyReply) {
+  if (error instanceof WebhookAuthenticationError) return reply.code(401).send({ error: "Webhook authentication failed." });
+  if (error instanceof WebhookAccessError) return reply.code(403).send({ error: error.message });
+  if (error instanceof WebhookInputError) return reply.code(422).send({ error: error.message });
   throw error;
 }
 
@@ -110,7 +133,7 @@ export async function buildServer(options: ServerOptions = {}) {
       callback(new Error("Origin is not allowed."), false);
     },
     credentials: true,
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PATCH", "DELETE"],
     allowedHeaders: ["content-type", "authorization"],
   });
   await app.register(cookie);
@@ -385,7 +408,8 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     try {
       const queued = await authoring.enqueue(user, request.body);
-      queueMicrotask(() => { void authoring.process(user, queued.job.id).catch((error: unknown) => request.log.error({ name: error instanceof Error ? error.name : "UnknownError" }, "Authoring worker failed")); });
+      if (options.durableWorkers) await options.durableWorkers.enqueueAuthoring(user, queued.job.id);
+      else queueMicrotask(() => { void authoring.process(user, queued.job.id).catch((error: unknown) => request.log.error({ name: error instanceof Error ? error.name : "UnknownError" }, "Authoring worker failed")); });
       return reply.code(queued.created ? 202 : 200).send(queued);
     } catch (error) {
       if (error instanceof AuthoringAccessError) return reply.code(403).send({ error: error.message, code: "authoring.access_denied" });
@@ -628,6 +652,201 @@ export async function buildServer(options: ServerOptions = {}) {
     }
   });
 
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/webhooks/:id", {
+    bodyLimit: 256_000,
+    config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
+    schema: { body: { type: "object" } },
+  }, async (request, reply) => {
+    const webhooks = options.webhookService;
+    if (!webhooks) return reply.code(503).send({ error: "Webhook execution is not configured." });
+    try {
+      const timestamp = request.headers["x-doonce-timestamp"];
+      const signature = request.headers["x-doonce-signature"];
+      const idempotencyKey = request.headers["idempotency-key"];
+      const result = await webhooks.trigger(request.params.id, request.body, {
+        ...(typeof timestamp === "string" ? { timestamp } : {}),
+        ...(typeof signature === "string" ? { signature } : {}),
+        ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
+      });
+      return reply.code(result.created ? 202 : 200).send(result);
+    } catch (error) {
+      return webhookError(error, reply);
+    }
+  });
+
+  app.get<{ Querystring: { workflowId?: string } }>("/api/v1/webhook-endpoints", async (request, reply) => {
+    const auth = options.authService;
+    const webhooks = options.webhookService;
+    if (!auth || !webhooks) return reply.code(503).send({ error: "Webhook execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return { endpoints: await webhooks.list(user, request.query.workflowId) };
+    } catch (error) {
+      return webhookError(error, reply);
+    }
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/webhook-endpoints", { schema: { body: { type: "object" } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const webhooks = options.webhookService;
+    if (!auth || !webhooks) return reply.code(503).send({ error: "Webhook execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return reply.code(201).send({ endpoint: await webhooks.create(user, request.body) });
+    } catch (error) {
+      return webhookError(error, reply);
+    }
+  });
+
+  app.get("/api/v1/queue/health", async (request, reply) => {
+    const auth = options.authService;
+    if (!auth || !options.jobQueue) return reply.code(503).send({ error: "Durable execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    if (user.role !== "owner") return reply.code(403).send({ error: "Only workspace owners can view queue health." });
+    return { queues: await options.jobQueue.health() };
+  });
+
+  app.get("/api/v1/browser-session-profiles", async (request, reply) => {
+    const auth = options.authService;
+    const profiles = options.sessionProfileService;
+    if (!auth || !profiles) return reply.code(503).send({ error: "Managed browser sessions are not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return { profiles: await profiles.list(user) };
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/browser-session-profiles", { schema: { body: { type: "object" } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const profiles = options.sessionProfileService;
+    if (!auth || !profiles) return reply.code(503).send({ error: "Managed browser sessions are not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return reply.code(201).send({ profile: await profiles.create(user, request.body) });
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.patch<{ Params: { id: string }; Body: { enabled?: boolean } }>("/api/v1/browser-session-profiles/:id", { schema: { body: { type: "object", required: ["enabled"], additionalProperties: false, properties: { enabled: { type: "boolean" } } } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const profiles = options.sessionProfileService;
+    if (!auth || !profiles) return reply.code(503).send({ error: "Managed browser sessions are not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return { profile: await profiles.setEnabled(user, request.params.id, request.body.enabled === true) };
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/v1/browser-session-profiles/:id", async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const profiles = options.sessionProfileService;
+    if (!auth || !profiles) return reply.code(503).send({ error: "Managed browser sessions are not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      await profiles.remove(user, request.params.id);
+      return reply.code(204).send();
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/schedules/preview", { schema: { body: { type: "object" } } }, async (request, reply) => {
+    const auth = options.authService;
+    const schedules = options.scheduleService;
+    if (!auth || !schedules) return reply.code(503).send({ error: "Workflow scheduling is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return { nextRuns: schedules.preview(request.body) };
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.get<{ Querystring: { workflowId?: string } }>("/api/v1/schedules", async (request, reply) => {
+    const auth = options.authService;
+    const schedules = options.scheduleService;
+    if (!auth || !schedules) return reply.code(503).send({ error: "Workflow scheduling is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return { schedules: await schedules.list(user, request.query.workflowId) };
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/schedules", { schema: { body: { type: "object" } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const schedules = options.scheduleService;
+    if (!auth || !schedules) return reply.code(503).send({ error: "Workflow scheduling is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const schedule = await schedules.create(user, request.body);
+      await options.durableWorkers?.registerScheduleExpansion(user);
+      return reply.code(201).send({ schedule });
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.patch<{ Params: { id: string }; Body: unknown }>("/api/v1/schedules/:id", { schema: { body: { type: "object" } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const schedules = options.scheduleService;
+    if (!auth || !schedules) return reply.code(503).send({ error: "Workflow scheduling is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return { schedule: await schedules.update(user, request.params.id, request.body) };
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: { enabled?: boolean } }>("/api/v1/schedules/:id/enabled", { schema: { body: { type: "object", required: ["enabled"], additionalProperties: false, properties: { enabled: { type: "boolean" } } } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const schedules = options.scheduleService;
+    if (!auth || !schedules) return reply.code(503).send({ error: "Workflow scheduling is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return { schedule: await schedules.setEnabled(user, request.params.id, request.body.enabled === true) };
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/v1/schedules/:id", async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const schedules = options.scheduleService;
+    if (!auth || !schedules) return reply.code(503).send({ error: "Workflow scheduling is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      await schedules.remove(user, request.params.id);
+      return reply.code(204).send();
+    } catch (error) {
+      return scheduleError(error, reply);
+    }
+  });
+
   app.post<{ Body: unknown }>("/api/v1/runs", {
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     schema: { body: { type: "object" } },
@@ -691,7 +910,11 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!auth || !artifacts) return reply.code(503).send({ error: "Artifact storage is not configured." });
     const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? (options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
-    try { return reply.code(201).send({ artifact: await artifacts.create(user, request.params.id, request.body) }); }
+    try {
+      const artifact = await artifacts.create(user, request.params.id, request.body);
+      await options.durableWorkers?.registerArtifactCleanup(user);
+      return reply.code(201).send({ artifact });
+    }
     catch (error) { if (error instanceof ArtifactInputError) return reply.code(400).send({ error: error.message, code: "artifact.invalid" }); throw error; }
   });
 

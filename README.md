@@ -89,6 +89,16 @@ Unexpected API failures return a generic client-safe error. Structured server lo
 
 `PostgresRunReceiptStore` persists only terminal, redacted receipts through the same tenant-scoped transaction boundary. It is not exposed as a “run now” API until a local browser bridge can execute and verify an allowed step.
 
+## Durable and scheduled execution
+
+Set `JOB_DATABASE_URL` to enable the pg-boss queue and hosted workers. Keep this credential limited to the pg-boss schema. The normal `DATABASE_URL` remains the restricted row-level-security application role. Queue health reports aggregate state counts only and is visible only to workspace owners.
+
+Schedules always store an IANA timezone, an explicit daylight-saving duplicate policy, immutable input bindings, and a reference to an enabled managed browser session. Expansion jobs enqueue the next tenant-scoped minute before processing the current one; trigger receipts and run idempotency keys prevent a restart or retry from creating a duplicate run.
+
+Managed runs require `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`. Each run launches a separate browser context, restores only referenced Playwright storage state, limits time, pages, steps, and download bytes, and blocks network requests outside the workflow's published domain allowlist. A local extension run is never silently changed into a hosted run: the API derives the executor from the trigger and session location and rejects incompatible workflows before queueing them.
+
+Browser session APIs accept secret-manager references such as `env://FINANCE_SESSION`; they never accept or return raw cookies. The environment provider expects the referenced variable to contain Playwright storage-state JSON. Vault, AWS Secrets Manager, and GCP Secret Manager references require a corresponding `SecretProvider` adapter in the worker deployment.
+
 ## Pre-launch policy drafts
 
 Internal source drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). The frontend may show matching, clearly labelled pre-launch summaries at `/privacy` and `/terms`; they are not final notices or contractual terms. Final policies cannot be published until the company, jurisdiction, and data-processing placeholders are approved.
