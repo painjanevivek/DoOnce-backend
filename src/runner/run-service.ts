@@ -4,6 +4,7 @@ import type { AuthenticatedUser, MembershipRole } from "../auth/auth-service.js"
 import type { ExecutorKind, RunRequest, RunResult, StepResult, WorkflowSpec } from "../contracts/protocol.js";
 import { validateProtocolContract } from "../contracts/validation.js";
 import { ExecutionRoutingError, routeExecution, type SessionLocation, type TriggerKind } from "../triggers/execution-router.js";
+import { operationalMetrics } from "../observability/metrics.js";
 
 export type RunStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
@@ -161,7 +162,16 @@ export class RunService {
       throw new RunConflictError("This run already has a different terminal result.");
     }
     const result = existing.cancelRequested ? { ...validation.value, status: "cancelled" as const, reasonCode: "run.cancelled" } : validation.value;
-    return this.store.finish(user, runId, hashLease(leaseToken), structuredClone(result));
+    const finished = await this.store.finish(user, runId, hashLease(leaseToken), structuredClone(result));
+    if (finished) {
+      operationalMetrics.increment("doonce_run_results_total", { executor: existing.executor, status: result.status });
+      operationalMetrics.observe("doonce_run_duration_seconds", { executor: existing.executor }, Math.max(0, new Date(result.finishedAt).getTime() - new Date(result.startedAt).getTime()) / 1000);
+      for (const step of result.stepResults) {
+        if (step.reasonCode?.startsWith("locator.")) operationalMetrics.increment("doonce_locator_failures_total", { executor: existing.executor, code: step.reasonCode });
+        if (step.reasonCode?.startsWith("assertion.") || step.assertionResults?.some(({ status }) => status === "failed")) operationalMetrics.increment("doonce_verification_failures_total", { executor: existing.executor, code: step.reasonCode ?? "verification.failed" });
+      }
+    }
+    return finished;
   }
 
   public async cancel(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined> {

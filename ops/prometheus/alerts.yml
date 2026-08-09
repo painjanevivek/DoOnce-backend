@@ -1,0 +1,33 @@
+groups:
+  - name: doonce-production
+    rules:
+      - alert: DoOnceApiHighErrorRate
+        expr: sum(rate(doonce_http_requests_total{status="5xx"}[10m])) / clamp_min(sum(rate(doonce_http_requests_total[10m])), 0.001) > 0.05
+        for: 10m
+        labels: { severity: page }
+        annotations: { summary: "DoOnce API 5xx ratio exceeds 5%" }
+      - alert: DoOnceApiHighLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(doonce_http_request_duration_seconds_bucket[10m]))) > 1
+        for: 15m
+        labels: { severity: ticket }
+        annotations: { summary: "DoOnce API p95 latency exceeds one second" }
+      - alert: DoOnceQueueStalled
+        expr: max by (queue) (doonce_queue_oldest_job_age_seconds) > 300
+        for: 10m
+        labels: { severity: page }
+        annotations: { summary: "A DoOnce durable queue has been stalled for five minutes" }
+      - alert: DoOnceWorkerFailures
+        expr: sum by (queue) (increase(doonce_queue_jobs_total{outcome="failed"}[10m])) >= 3
+        for: 5m
+        labels: { severity: page }
+        annotations: { summary: "A DoOnce worker queue has repeated failures" }
+      - alert: DoOnceProductionRunFailures
+        expr: sum(rate(doonce_run_results_total{status=~"failed|paused"}[15m])) / clamp_min(sum(rate(doonce_run_results_total[15m])), 0.001) > 0.1
+        for: 15m
+        labels: { severity: page }
+        annotations: { summary: "Production workflow failure ratio exceeds 10%" }
+      - alert: DoOnceArtifactUploadFailures
+        expr: sum(increase(doonce_artifact_upload_failures_total[15m])) >= 5
+        for: 5m
+        labels: { severity: ticket }
+        annotations: { summary: "Artifact uploads are repeatedly failing" }

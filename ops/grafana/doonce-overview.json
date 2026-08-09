@@ -1,0 +1,17 @@
+{
+  "title": "DoOnce production overview",
+  "uid": "doonce-overview",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    { "id": 1, "type": "timeseries", "title": "API request rate", "targets": [{ "expr": "sum by (status) (rate(doonce_http_requests_total[5m]))", "legendFormat": "{{status}}" }], "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 } },
+    { "id": 2, "type": "timeseries", "title": "API p95 latency", "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(doonce_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95" }], "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 } },
+    { "id": 3, "type": "timeseries", "title": "Oldest queued job", "targets": [{ "expr": "doonce_queue_oldest_job_age_seconds", "legendFormat": "{{queue}}" }], "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 } },
+    { "id": 4, "type": "timeseries", "title": "Queue depth", "targets": [{ "expr": "doonce_queue_jobs", "legendFormat": "{{queue}} {{state}}" }], "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 } },
+    { "id": 5, "type": "timeseries", "title": "Run outcomes", "targets": [{ "expr": "sum by (executor, status) (rate(doonce_run_results_total[10m]))", "legendFormat": "{{executor}} {{status}}" }], "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 } },
+    { "id": 6, "type": "timeseries", "title": "Locator and verification failures", "targets": [{ "expr": "sum by (code) (rate(doonce_locator_failures_total[10m]))", "legendFormat": "locator {{code}}" }, { "expr": "sum by (code) (rate(doonce_verification_failures_total[10m]))", "legendFormat": "verification {{code}}" }], "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 } },
+    { "id": 7, "type": "timeseries", "title": "Model latency and failures", "targets": [{ "expr": "rate(doonce_model_request_duration_seconds_sum[10m]) / clamp_min(rate(doonce_model_request_duration_seconds_count[10m]), 0.001)", "legendFormat": "mean latency" }, { "expr": "sum(rate(doonce_model_requests_total{outcome=\"failed\"}[10m]))", "legendFormat": "failures" }], "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 } },
+    { "id": 8, "type": "timeseries", "title": "Evidence and extension health", "targets": [{ "expr": "sum(rate(doonce_artifact_upload_failures_total[10m]))", "legendFormat": "artifact failures" }, { "expr": "sum by (outcome) (rate(doonce_extension_sync_total[10m]))", "legendFormat": "extension {{outcome}}" }], "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 } }
+  ]
+}

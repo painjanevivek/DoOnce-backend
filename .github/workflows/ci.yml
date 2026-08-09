@@ -26,3 +26,69 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: docker build --tag doonce-backend:ci .
+
+  recovery:
+    name: Migration and backup restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: doonce
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d doonce"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      PGPASSWORD: postgres
+      MIGRATIONS_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/doonce
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - name: Back up and restore into an isolated database
+        run: |
+          pg_dump --host 127.0.0.1 --username postgres --dbname doonce --format custom --file doonce.backup
+          createdb --host 127.0.0.1 --username postgres doonce_restore
+          pg_restore --host 127.0.0.1 --username postgres --dbname doonce_restore --exit-on-error doonce.backup
+          source_count=$(psql --host 127.0.0.1 --username postgres --dbname doonce --tuples-only --no-align --command "SELECT count(*) FROM schema_migrations")
+          restore_count=$(psql --host 127.0.0.1 --username postgres --dbname doonce_restore --tuples-only --no-align --command "SELECT count(*) FROM schema_migrations")
+          test "$source_count" = "$restore_count"
+
+  supply-chain:
+    name: Dependency, image, and SBOM checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Generate CycloneDX software bill of materials
+        run: npm sbom --sbom-format cyclonedx > doonce-backend.sbom.json
+      - run: docker build --tag doonce-backend:ci .
+      - name: Scan production container
+        uses: anchore/scan-action@v7
+        with:
+          image: doonce-backend:ci
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: true
+      - uses: actions/upload-artifact@v6
+        with:
+          name: doonce-backend-sbom
+          path: doonce-backend.sbom.json
+          retention-days: 30

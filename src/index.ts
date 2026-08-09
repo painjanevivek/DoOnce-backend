@@ -1,3 +1,4 @@
+import { telemetrySdk } from "./observability/telemetry-bootstrap.js";
 import { buildServer } from "./server.js";
 import { AuthService } from "./auth/auth-service.js";
 import { PostgresAuthStore } from "./auth/postgres-auth-store.js";
@@ -56,7 +57,7 @@ const canonicalWorkflowService = pool ? new CanonicalWorkflowService(new Postgre
 const captureService = pool ? new CaptureService(new PostgresCaptureStore(pool)) : undefined;
 const captureCompilationService = captureService && canonicalWorkflowService ? new CaptureCompilationService(captureService, new CaptureWorkflowCompiler(), canonicalWorkflowService) : undefined;
 const jobDatabaseUrl = process.env.JOB_DATABASE_URL;
-const jobQueue = jobDatabaseUrl ? new PgBossJobQueue(jobDatabaseUrl, (error) => console.error("Durable queue error", error)) : undefined;
+const jobQueue = jobDatabaseUrl ? new PgBossJobQueue(jobDatabaseUrl, (error) => console.error(JSON.stringify({ eventCode: "queue.connection_error", errorCode: error.name }))) : undefined;
 if (jobQueue) await jobQueue.start();
 const runStore = pool ? new PostgresRunStore(pool) : undefined;
 const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined) : undefined;
@@ -103,11 +104,13 @@ const app = await buildServer({
   ...(durableWorkers ? { durableWorkers } : {}),
   ...(webhookService ? { webhookService } : {}),
   ...(videoService ? { videoService } : {}),
+  readinessCheck: async () => { await pool?.query("SELECT 1"); if (jobQueue) await jobQueue.health(); },
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
-if (jobQueue || pool) app.addHook("onClose", async () => {
+if (jobQueue || pool || telemetrySdk) app.addHook("onClose", async () => {
   await jobQueue?.stop();
   await pool?.end();
+  await telemetrySdk?.shutdown();
 });
 
 void app.listen({ host, port });

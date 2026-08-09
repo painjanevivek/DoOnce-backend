@@ -2,7 +2,7 @@ export const queueNames = ["workflow-runs", "authoring-jobs", "repair-jobs", "ar
 export type QueueName = typeof queueNames[number];
 export interface QueueJob<T> { id: string; name: QueueName; data: T; signal: AbortSignal }
 export interface EnqueueOptions { idempotencyKey: string; startAfter?: Date; retryLimit?: number; expireInSeconds?: number }
-export interface QueueHealth { name: QueueName; queued: number; ready: number; active: number; failed: number; deferred: number; total: number }
+export interface QueueHealth { name: QueueName; queued: number; ready: number; active: number; failed: number; deferred: number; total: number; oldestJobAgeSeconds: number }
 export interface JobQueue {
   start(): Promise<void>;
   stop(): Promise<void>;

@@ -107,6 +107,12 @@ The worker expects `ffprobe`, `ffmpeg`, and `tesseract` on `PATH`. Override them
 
 Temporary media is tenant-scoped and retained for 24 hours. The `video-cleanup` queue removes the binary before deleting its metadata; monitor cleanup failures so expired media cannot accumulate silently.
 
+## Observability and operations
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OTLP/HTTP traces and `METRICS_BEARER_TOKEN` to expose internal Prometheus metrics at `/internal/metrics`. `/health` is process liveness; `/ready` checks configured PostgreSQL and queue dependencies and fails closed. Metric labels are deliberately aggregate and low-cardinality.
+
+Deployment, rollback, restore, queue recovery, incident, extension release, compatibility, provider outage, and reliability procedures are indexed in the [operations handbook](docs/operations/README.md). Import the versioned Prometheus rules and Grafana dashboard from [`ops`](ops).
+
 ## Pre-launch policy drafts
 
 Internal source drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). The frontend may show matching, clearly labelled pre-launch summaries at `/privacy` and `/terms`; they are not final notices or contractual terms. Final policies cannot be published until the company, jurisdiction, and data-processing placeholders are approved.

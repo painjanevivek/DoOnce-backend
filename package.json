@@ -8,7 +8,7 @@
     "node": "24.12.x"
   },
   "scripts": {
-    "pretest": "tsx --test test/artifact-service.test.ts test/authoring-service.test.ts test/postgres-authoring-job-store.test.ts test/repair-service.test.ts test/postgres-repair-store.test.ts test/execution-router.test.ts test/schedule-service.test.ts test/session-profile-service.test.ts test/webhook-service.test.ts test/video-service.test.ts test/resumable-video-store.test.ts test/video-server.test.ts",
+    "pretest": "tsx --test test/artifact-service.test.ts test/authoring-service.test.ts test/postgres-authoring-job-store.test.ts test/repair-service.test.ts test/postgres-repair-store.test.ts test/execution-router.test.ts test/schedule-service.test.ts test/session-profile-service.test.ts test/webhook-service.test.ts test/video-service.test.ts test/resumable-video-store.test.ts test/video-server.test.ts test/observability.test.ts test/load-smoke.test.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
@@ -18,6 +18,7 @@
     "typecheck": "npm run contracts:verify && tsc --noEmit -p tsconfig.json",
     "contracts:verify": "node scripts/verify-contracts.mjs",
     "contracts:export": "node scripts/export-contracts.mjs",
+    "load:smoke": "node scripts/load-smoke.mjs",
     "test": "tsx --test test/action-policy.test.ts test/capture-service.test.ts test/capture-compilation-service.test.ts test/capture-workflow-compiler.test.ts test/canonical-workflow-service.test.ts test/protocol-contracts.test.ts test/workflow-schema.test.ts test/workflow-spec.test.ts test/workflow-migration.test.ts test/workflow-versioning.test.ts test/workflow-service.test.ts test/migrator.test.ts test/tenant-context.test.ts test/auth-service.test.ts test/server.test.ts test/run-state-machine.test.ts test/run-guardrails.test.ts test/run-receipt.test.ts test/run-service.test.ts test/postgres-run-store.test.ts test/postgres-run-receipt-store.test.ts test/postgres-workflow-store.test.ts test/postgres-canonical-workflow-store.test.ts test/postgres-capture-store.test.ts test/runtime-role.test.ts"
   },
   "dependencies": {
@@ -26,6 +27,9 @@
     "@fastify/helmet": "^13.0.0",
     "@fastify/rate-limit": "^11.2.0",
     "@fastify/swagger": "^9.8.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "croner": "^10.0.1",

@@ -82,6 +82,13 @@ export class PgBossJobQueue implements JobQueue {
   public async health(): Promise<QueueHealth[]> {
     this.assertStarted();
     const queues = await this.boss.getQueues([...queueNames]);
+    const ages = await this.boss.getDb().executeSql(`
+      SELECT name, COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_on))), 0)::float AS age_seconds
+      FROM pgboss.job
+      WHERE state IN ('created', 'retry') AND name = ANY($1::text[])
+      GROUP BY name
+    `, [[...queueNames]]);
+    const ageByQueue = new Map<string, number>(ages.rows.map((row: { name: string; age_seconds: number | string }) => [row.name, Number(row.age_seconds)]));
     return queues.map((queue) => ({
       name: queue.name as QueueName,
       queued: queue.queuedCount,
@@ -90,6 +97,7 @@ export class PgBossJobQueue implements JobQueue {
       failed: queue.failedCount,
       deferred: queue.deferredCount,
       total: queue.totalCount,
+      oldestJobAgeSeconds: Math.max(0, ageByQueue.get(queue.name) ?? 0),
     }));
   }
 

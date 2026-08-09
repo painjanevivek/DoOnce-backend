@@ -1,9 +1,10 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
-import Fastify, { type FastifyError } from "fastify";
+import Fastify, { type FastifyError, type FastifyRequest } from "fastify";
 import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
 import { CanonicalWorkflowAccessError, CanonicalWorkflowInputError, CanonicalWorkflowService } from "./workflow/canonical-workflow-service.js";
@@ -32,6 +33,8 @@ import type { JobQueue } from "./queue/job-queue.js";
 import type { DurableWorkers } from "./queue/workers.js";
 import { WebhookAccessError, WebhookAuthenticationError, WebhookInputError, WebhookService } from "./triggers/webhook-service.js";
 import { VideoAccessError, VideoConflictError, VideoInputError, VideoService } from "./video/video-service.js";
+import { operationalMetrics } from "./observability/metrics.js";
+import { finishSpan, startSpan } from "./observability/tracing.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -61,6 +64,7 @@ export interface ServerOptions {
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
   videoService?: VideoService;
+  readinessCheck?: () => Promise<void>;
 }
 
 const sessionCookieName = "doonce_session";
@@ -100,6 +104,8 @@ export async function buildServer(options: ServerOptions = {}) {
   const extensionOrigins = options.extensionOrigins ?? (process.env.DOONCE_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean);
   const browserOrigins = [...allowedOrigins, ...extensionOrigins];
   const operationalControls = options.operationalControls ?? operationalControlsFromEnvironment();
+  const requestStartedAt = new WeakMap<FastifyRequest, number>();
+  const requestSpans = new WeakMap<FastifyRequest, ReturnType<typeof startSpan>>();
   const app = Fastify({
     ajv: {
       customOptions: {
@@ -112,6 +118,18 @@ export async function buildServer(options: ServerOptions = {}) {
     trustProxy: false,
   });
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_request, body, done) => done(null, body));
+  app.addHook("onRequest", async (request) => {
+    requestStartedAt.set(request, performance.now());
+    requestSpans.set(request, startSpan("http.request", { "http.request.method": request.method }));
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const route = request.routeOptions.url ?? "unmatched";
+    const statusFamily = `${Math.floor(reply.statusCode / 100)}xx`;
+    operationalMetrics.increment("doonce_http_requests_total", { method: request.method, route, status: statusFamily });
+    operationalMetrics.observe("doonce_http_request_duration_seconds", { method: request.method, route }, (performance.now() - (requestStartedAt.get(request) ?? performance.now())) / 1000);
+    const span = requestSpans.get(request);
+    if (span) { span.setAttribute("http.route", route); finishSpan(span, reply.statusCode); }
+  });
 
   if (process.env.NODE_ENV !== "production") {
     await app.register(swagger, {
@@ -157,6 +175,8 @@ export async function buildServer(options: ServerOptions = {}) {
   });
   app.setErrorHandler((error: FastifyError, request, reply) => {
     request.log.error({
+      eventCode: "api.unhandled_error",
+      requestId: request.id,
       error: {
         name: error.name,
         code: error.code,
@@ -171,6 +191,24 @@ export async function buildServer(options: ServerOptions = {}) {
   });
 
   app.get("/health", async () => ({ status: "ok", service: "doonce-api" }));
+  app.get("/ready", async (_request, reply) => {
+    try { await options.readinessCheck?.(); return { status: "ready", service: "doonce-api" }; }
+    catch { return reply.code(503).send({ status: "unavailable", service: "doonce-api" }); }
+  });
+
+  app.get("/internal/metrics", async (request, reply) => {
+    const expected = process.env.METRICS_BEARER_TOKEN;
+    if (!expected) return reply.code(404).send({ error: "Not found." });
+    if (!constantTimeToken(request.headers.authorization, expected)) return reply.code(401).send({ error: "Authentication is required." });
+    for (const queue of await options.jobQueue?.health() ?? []) {
+      operationalMetrics.set("doonce_queue_jobs", { queue: queue.name, state: "queued" }, queue.queued);
+      operationalMetrics.set("doonce_queue_jobs", { queue: queue.name, state: "ready" }, queue.ready);
+      operationalMetrics.set("doonce_queue_jobs", { queue: queue.name, state: "active" }, queue.active);
+      operationalMetrics.set("doonce_queue_jobs", { queue: queue.name, state: "failed" }, queue.failed);
+      operationalMetrics.set("doonce_queue_oldest_job_age_seconds", { queue: queue.name }, queue.oldestJobAgeSeconds);
+    }
+    return reply.type("text/plain; version=0.0.4; charset=utf-8").send(operationalMetrics.prometheus());
+  });
 
   if (process.env.NODE_ENV !== "production") {
     app.get("/api/v1/openapi.json", { schema: { hide: true } }, async () => app.swagger());
@@ -241,8 +279,11 @@ export async function buildServer(options: ServerOptions = {}) {
     const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? await captures.authenticateExtension(request.headers.authorization);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     try {
-      return await captures.sync(user, request.params.id, request.body);
+      const result = await captures.sync(user, request.params.id, request.body);
+      operationalMetrics.increment("doonce_extension_sync_total", { outcome: "completed" });
+      return result;
     } catch (error) {
+      operationalMetrics.increment("doonce_extension_sync_total", { outcome: "failed" });
       if (error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.batch_invalid" });
       if (error instanceof CaptureConflictError) return reply.code(409).send({ error: error.message, code: "capture.cursor_conflict" });
       throw error;
@@ -1035,7 +1076,7 @@ export async function buildServer(options: ServerOptions = {}) {
       await options.durableWorkers?.registerArtifactCleanup(user);
       return reply.code(201).send({ artifact });
     }
-    catch (error) { if (error instanceof ArtifactInputError) return reply.code(400).send({ error: error.message, code: "artifact.invalid" }); throw error; }
+    catch (error) { operationalMetrics.increment("doonce_artifact_upload_failures_total", { code: error instanceof ArtifactInputError ? "artifact.invalid" : "artifact.internal" }); if (error instanceof ArtifactInputError) return reply.code(400).send({ error: error.message, code: "artifact.invalid" }); throw error; }
   });
 
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/artifacts", async (request, reply) => {
@@ -1404,6 +1445,13 @@ function hasAllowedOrigin(origin: string | undefined, allowedOrigins: readonly s
 
 function isExtensionOrigin(origin: string): boolean {
   return /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
+}
+
+function constantTimeToken(header: string | undefined, expected: string): boolean {
+  const supplied = header?.startsWith("Bearer ") ? header.slice(7) : "";
+  const suppliedDigest = createHash("sha256").update(supplied).digest();
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(suppliedDigest, expectedDigest);
 }
 
 function redactRunReceipt(receipt: RunReceipt) {

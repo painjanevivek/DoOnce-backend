@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AuthenticatedUser } from "../auth/auth-service.js";
 import type { AuthoringService } from "../authoring/authoring-service.js";
 import type { ArtifactService } from "../artifacts/artifact-service.js";
@@ -6,6 +7,8 @@ import type { SessionProfileStore } from "../sessions/session-profile-service.js
 import type { ScheduleService } from "../scheduling/schedule-service.js";
 import type { ExecutionRun, RunDispatcher, RunService } from "../runner/run-service.js";
 import type { VideoService } from "../video/video-service.js";
+import { operationalMetrics } from "../observability/metrics.js";
+import { withSpan } from "../observability/tracing.js";
 import type { JobQueue } from "./job-queue.js";
 
 interface UserPayload {
@@ -55,17 +58,17 @@ export class DurableWorkers {
   ) {}
 
   public async start(): Promise<void> {
-    await this.queue.work<HostedRunPayload>("workflow-runs", async (job) => this.executeHosted(job.data, job.signal), 2);
-    await this.queue.work<ScheduleExpansionPayload>("schedule-expansion", async (job) => this.expandSchedules(job.data), 1);
+    await this.queue.work<HostedRunPayload>("workflow-runs", async (job) => this.runJob(job.name, job.id, job.data, () => this.executeHosted(job.data, job.signal)), 2);
+    await this.queue.work<ScheduleExpansionPayload>("schedule-expansion", async (job) => this.runJob(job.name, job.id, job.data, () => this.expandSchedules(job.data)), 1);
     if (this.authoring) await this.queue.work<AuthoringPayload>("authoring-jobs", async (job) => {
-      await this.authoring?.process(fromPayload(job.data), job.data.jobId);
+      await this.runJob(job.name, job.id, job.data, async () => { await this.authoring?.process(fromPayload(job.data), job.data.jobId); });
     }, 2);
-    if (this.artifacts) await this.queue.work<UserPayload>("artifact-cleanup", async (job) => this.cleanupArtifacts(job.data), 1);
+    if (this.artifacts) await this.queue.work<UserPayload>("artifact-cleanup", async (job) => this.runJob(job.name, job.id, job.data, () => this.cleanupArtifacts(job.data)), 1);
     if (this.videos) {
       await this.queue.work<VideoAnalysisPayload>("video-analysis", async (job) => {
-        await this.videos?.analyze(fromPayload(job.data), job.data.videoImportId);
+        await this.runJob(job.name, job.id, job.data, async () => { await this.videos?.analyze(fromPayload(job.data), job.data.videoImportId); });
       }, 1);
-      await this.queue.work<UserPayload>("video-cleanup", async (job) => this.cleanupVideos(job.data), 1);
+      await this.queue.work<UserPayload>("video-cleanup", async (job) => this.runJob(job.name, job.id, job.data, () => this.cleanupVideos(job.data)), 1);
     }
   }
 
@@ -151,7 +154,23 @@ export class DurableWorkers {
     await this.registerVideoCleanup(user);
     await this.videos?.cleanup(user);
   }
+
+  private async runJob(name: string, id: string, payload: UserPayload, work: () => Promise<void>): Promise<void> {
+    const startedAt = performance.now();
+    try {
+      await withSpan(`queue.process ${name}`, { "messaging.system": "pg-boss", "messaging.destination.name": name, "messaging.message.id": id }, work);
+      operationalMetrics.increment("doonce_queue_jobs_total", { queue: name, outcome: "completed" });
+    } catch (error) {
+      operationalMetrics.increment("doonce_queue_jobs_total", { queue: name, outcome: "failed" });
+      console.error(JSON.stringify({ eventCode: "worker.job_failed", errorCode: error instanceof Error ? error.name : "UnknownError", queue: name, jobId: id, tenantRef: tenantReference(payload.tenantId) }));
+      throw error;
+    } finally {
+      operationalMetrics.observe("doonce_queue_job_duration_seconds", { queue: name }, (performance.now() - startedAt) / 1000);
+    }
+  }
 }
+
+function tenantReference(tenantId: string): string { return createHash("sha256").update(tenantId).digest("hex").slice(0, 16); }
 
 function toPayload(user: AuthenticatedUser): UserPayload {
   return { tenantId: user.tenantId, userId: user.userId, email: user.email, role: user.role };

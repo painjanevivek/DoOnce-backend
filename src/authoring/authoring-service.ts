@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AuthenticatedUser } from "../auth/auth-service.js";
 import type { RuntimeCapabilities, WorkflowInputDefinition, WorkflowSpec } from "../contracts/protocol.js";
 import { validateProtocolContract } from "../contracts/validation.js";
+import { operationalMetrics } from "../observability/metrics.js";
 import type { CanonicalWorkflowService } from "../workflow/canonical-workflow-service.js";
 import { normalizeAuthoringCandidate } from "./authoring-normalizer.js";
 import type { AuthoringProvider, AuthoringProviderResult, AuthoringProviderUsage } from "./authoring-provider.js";
@@ -57,7 +58,18 @@ export class AuthoringService {
     try {
       await this.store.progress(user, jobId, "planning", "Turning the description into a structured workflow candidate.");
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const generated = sanitizeProviderResult(await this.provider.generate({ ...claimed.request, attempt, validationFeedback: feedback }));
+        const modelStarted = performance.now();
+        let generated: AuthoringProviderResult;
+        try {
+          generated = sanitizeProviderResult(await this.provider.generate({ ...claimed.request, attempt, validationFeedback: feedback }));
+          operationalMetrics.increment("doonce_model_requests_total", { provider: generated.metadata.provider, model: generated.metadata.model, outcome: "completed" });
+          operationalMetrics.increment("doonce_model_cost_microusd_total", { provider: generated.metadata.provider, model: generated.metadata.model }, generated.usage.estimatedCostMicrousd);
+        } catch (error) {
+          operationalMetrics.increment("doonce_model_requests_total", { provider: this.provider.identity.provider, model: this.provider.identity.model, outcome: "failed" });
+          throw error;
+        } finally {
+          operationalMetrics.observe("doonce_model_request_duration_seconds", { provider: this.provider.identity.provider, model: this.provider.identity.model }, (performance.now() - modelStarted) / 1000);
+        }
         usage = addUsage(usage, generated.usage);
         if (generated.candidate === undefined) {
           const outcome = outcomeFrom(generated, undefined, undefined, []);
