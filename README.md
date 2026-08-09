@@ -113,6 +113,10 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OTLP/HTTP traces and `METRICS_BEARER
 
 Deployment, rollback, restore, queue recovery, incident, extension release, compatibility, provider outage, and reliability procedures are indexed in the [operations handbook](docs/operations/README.md). Import the versioned Prometheus rules and Grafana dashboard from [`ops`](ops).
 
+## Controlled beta evidence
+
+Phase 13 adds tenant-scoped beta enrollment, measurable manual baselines, first-run and repeat-run observations, stable failure classification, an API compatibility matrix, and evidence-based expansion gates. Start with the [controlled beta guide](docs/beta/controlled-beta-guide.md); the machine-readable compatibility source is `src/beta/beta-types.ts`.
+
 ## Pre-launch policy drafts
 
 Internal source drafts for privacy, terms, incident response, and data retention live in [`docs/policy-drafts`](docs/policy-drafts/README.md). The frontend may show matching, clearly labelled pre-launch summaries at `/privacy` and `/terms`; they are not final notices or contractual terms. Final policies cannot be published until the company, jurisdiction, and data-processing placeholders are approved.

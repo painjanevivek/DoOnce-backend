@@ -35,6 +35,8 @@ import { WebhookAccessError, WebhookAuthenticationError, WebhookInputError, Webh
 import { VideoAccessError, VideoConflictError, VideoInputError, VideoService } from "./video/video-service.js";
 import { operationalMetrics } from "./observability/metrics.js";
 import { finishSpan, startSpan } from "./observability/tracing.js";
+import { registerBetaRoutes } from "./beta/beta-routes.js";
+import type { BetaService } from "./beta/beta-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -65,6 +67,7 @@ export interface ServerOptions {
   operationalControls?: OperationalControls;
   videoService?: VideoService;
   readinessCheck?: () => Promise<void>;
+  betaService?: BetaService;
 }
 
 const sessionCookieName = "doonce_session";
@@ -188,6 +191,13 @@ export async function buildServer(options: ServerOptions = {}) {
     if (error.statusCode === 429) return reply.code(429).send({ error: "Too many requests. Please try again shortly." });
     if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) return reply.code(error.statusCode).send({ error: "Request rejected." });
     return reply.code(500).send({ error: "Unexpected service error." });
+  });
+
+  await registerBetaRoutes(app, {
+    authService: options.authService,
+    betaService: options.betaService,
+    sessionCookieName,
+    mutationOriginAllowed: (origin) => hasAllowedOrigin(origin, allowedOrigins),
   });
 
   app.get("/health", async () => ({ status: "ok", service: "doonce-api" }));

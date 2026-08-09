@@ -38,6 +38,8 @@ import { FfmpegOcrObservationProvider, FfprobeMediaInspector } from "./video/med
 import { PostgresVideoImportStore } from "./video/postgres-video-import-store.js";
 import { FileSystemVideoStore } from "./video/resumable-video-store.js";
 import { VideoService } from "./video/video-service.js";
+import { BetaService } from "./beta/beta-service.js";
+import { PostgresBetaStore } from "./beta/postgres-beta-store.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -87,6 +89,7 @@ const durableWorkers = jobQueue && runService && scheduleService && sessionProfi
   : undefined;
 if (durableWorkers) await durableWorkers.start();
 const repairService = pool && process.env.REPAIR_ENABLED === "true" ? new RepairService(new PostgresRepairStore(pool)) : undefined;
+const betaService = pool ? new BetaService(new PostgresBetaStore(pool)) : undefined;
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
@@ -104,6 +107,7 @@ const app = await buildServer({
   ...(durableWorkers ? { durableWorkers } : {}),
   ...(webhookService ? { webhookService } : {}),
   ...(videoService ? { videoService } : {}),
+  ...(betaService ? { betaService } : {}),
   readinessCheck: async () => { await pool?.query("SELECT 1"); if (jobQueue) await jobQueue.health(); },
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });

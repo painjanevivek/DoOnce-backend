@@ -19,6 +19,8 @@ import { CaptureCompilationService } from "../src/compiler/capture-compilation-s
 import { CaptureWorkflowCompiler } from "../src/compiler/capture-workflow-compiler.js";
 import type { AuthoringJob, AuthoringService } from "../src/authoring/authoring-service.js";
 import type { RepairService } from "../src/repair/repair-service.js";
+import { BetaService, type BetaStore } from "../src/beta/beta-service.js";
+import type { BetaEnrollmentStatus, BetaSummary, BetaWorkflowEnrollment } from "../src/beta/beta-types.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
@@ -51,6 +53,19 @@ class ServerAuthStore implements AuthStore {
     return this.tokenHashes.has(tokenHash) && identity.tenantId === this.identity?.tenantId && identity.userId === this.identity?.userId;
   }
   public async revokeSession(tokenHash: string): Promise<void> { this.tokenHashes.delete(tokenHash); }
+}
+
+class ServerBetaStore implements BetaStore {
+  private workflows: BetaWorkflowEnrollment[] = [];
+  public enroll(_user: AuthenticatedUser, input: Parameters<BetaStore["enroll"]>[1]): Promise<BetaWorkflowEnrollment | undefined> {
+    const workflow: BetaWorkflowEnrollment = { id: input.id, workflowId: input.workflowId, taskCategory: input.taskCategory, baselineDurationSeconds: input.baselineDurationSeconds, baselineErrorRatePercent: input.baselineErrorRatePercent, status: "onboarding", firstTestObserved: false, firstProductionObserved: false, repeatUnassistedRuns: 0, productionRuns: 0, successfulProductionRuns: 0, productionSuccessRate: 0, classifiedFailures: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    this.workflows.push(workflow); return Promise.resolve(workflow);
+  }
+  public list(): Promise<BetaWorkflowEnrollment[]> { return Promise.resolve(this.workflows); }
+  public setStatus(_user: AuthenticatedUser, id: string, status: BetaEnrollmentStatus): Promise<BetaWorkflowEnrollment | undefined> { const item = this.workflows.find((workflow) => workflow.id === id); if (item) item.status = status; return Promise.resolve(item); }
+  public observeRun(): Promise<boolean> { return Promise.resolve(true); }
+  public recordFailure(): Promise<boolean> { return Promise.resolve(true); }
+  public summary(): Promise<BetaSummary> { return Promise.resolve({ enrolledWorkflows: this.workflows.length, workflowsWithFirstTest: 0, workflowsWithFirstProduction: 0, workflowsReadyForIndependentUse: 0, totalRepeatUnassistedRuns: 0, topFailureCategories: [] }); }
 }
 
 async function authenticatedApp() {
@@ -932,4 +947,28 @@ test("repair analysis exposes a reviewable proposal before creating a draft", as
   const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "repair@example.com", password: "correct-horse-battery-staple", tenantName: "Repair" } }); const cookie = signedUp.headers["set-cookie"] ?? "";
   const analyzed = await app.inject({ method: "POST", url: `/api/v1/runs/${serverAuthoringJob.id}/repair-proposals`, headers: { origin: "http://localhost:3000", cookie } }); assert.equal(analyzed.statusCode, 201); assert.equal(analyzed.json().proposal.status, "pending");
   const accepted = await app.inject({ method: "POST", url: `/api/v1/repair-proposals/${proposal.id}/accept`, headers: { origin: "http://localhost:3000", cookie } }); assert.equal(accepted.statusCode, 200); assert.equal(accepted.json().proposal.acceptedDraftVersion, 2);
+});
+
+test("controlled beta routes require a tenant session and store a measurable baseline", async (t) => {
+  const authService = new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes");
+  const app = await buildServer({ authService, betaService: new BetaService(new ServerBetaStore()) });
+  t.after(() => app.close());
+
+  assert.equal((await app.inject({ method: "GET", url: "/api/v1/beta/summary" })).statusCode, 401);
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "beta@example.com", password: "correct-horse-battery-staple", tenantName: "Beta Workspace" } });
+  const cookie = signedUp.headers["set-cookie"] ?? "";
+  const compatibility = await app.inject({ method: "GET", url: "/api/v1/beta/compatibility", headers: { cookie } });
+  assert.equal(compatibility.statusCode, 200);
+  assert.equal(compatibility.json().compatibility.workflowCategories.length, 6);
+
+  const enrolled = await app.inject({
+    method: "POST",
+    url: "/api/v1/beta/workflows",
+    headers: { origin: "http://localhost:3000", cookie },
+    payload: { workflowId: "33333333-3333-4333-8333-333333333333", taskCategory: "report-download", baselineDurationMinutes: 12.5, baselineErrorRatePercent: 4 },
+  });
+  assert.equal(enrolled.statusCode, 201);
+  assert.equal(enrolled.json().workflow.baselineDurationSeconds, 750);
+  const summary = await app.inject({ method: "GET", url: "/api/v1/beta/summary", headers: { cookie } });
+  assert.equal(summary.json().summary.enrolledWorkflows, 1);
 });
