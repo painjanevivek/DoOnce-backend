@@ -149,6 +149,7 @@ export interface StepResult {
   evidenceRefs?: string[];
   retryCount?: number;
   observedPage?: PageState;
+  repairCandidates?: LocatorCandidate[];
   assertionResults?: AssertionResult[];
 }
 

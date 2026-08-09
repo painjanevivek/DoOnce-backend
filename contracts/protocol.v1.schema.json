@@ -401,6 +401,7 @@
         "outputs": { "type": "object", "maxProperties": 100, "additionalProperties": { "type": "string", "maxLength": 10000 } },
         "evidenceRefs": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
         "retryCount": { "type": "integer", "minimum": 0, "maximum": 10 }, "observedPage": { "$ref": "#/$defs/PageState" },
+        "repairCandidates": { "type": "array", "maxItems": 12, "uniqueItems": true, "items": { "$ref": "#/$defs/LocatorCandidate" } },
         "assertionResults": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/AssertionResult" } }
       }
     },

@@ -21,6 +21,8 @@ import { PostgresArtifactMetadataStore } from "./artifacts/postgres-artifact-met
 import { AuthoringService } from "./authoring/authoring-service.js";
 import { PostgresAuthoringJobStore } from "./authoring/postgres-authoring-job-store.js";
 import { TemplateAuthoringProvider } from "./authoring/template-authoring-provider.js";
+import { RepairService } from "./repair/repair-service.js";
+import { PostgresRepairStore } from "./repair/postgres-repair-store.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -44,6 +46,7 @@ const artifactStoragePath = process.env.ARTIFACT_STORAGE_PATH;
 const artifactSigningSecret = process.env.ARTIFACT_SIGNING_SECRET ?? sessionSecret;
 const artifactService = pool && artifactStoragePath && artifactSigningSecret ? new ArtifactService(new PostgresArtifactMetadataStore(pool), new FileSystemObjectStore(artifactStoragePath), artifactSigningSecret) : undefined;
 const authoringService = pool && canonicalWorkflowService && process.env.TEXT_AUTHORING_ENABLED === "true" ? new AuthoringService(new PostgresAuthoringJobStore(pool), new TemplateAuthoringProvider(), canonicalWorkflowService) : undefined;
+const repairService = pool && process.env.REPAIR_ENABLED === "true" ? new RepairService(new PostgresRepairStore(pool)) : undefined;
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
@@ -54,6 +57,7 @@ const app = await buildServer({
   ...(runService ? { runService } : {}),
   ...(artifactService ? { artifactService } : {}),
   ...(authoringService ? { authoringService } : {}),
+  ...(repairService ? { repairService } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (pool) app.addHook("onClose", async () => pool.end());

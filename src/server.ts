@@ -25,6 +25,7 @@ import { CaptureCompilationError } from "./compiler/capture-workflow-compiler.js
 import { RunAccessError, RunConflictError, RunInputError, RunService } from "./runner/run-service.js";
 import { ArtifactInputError, ArtifactNotFoundError, ArtifactService } from "./artifacts/artifact-service.js";
 import { AuthoringAccessError, AuthoringConflictError, AuthoringInputError, AuthoringLimitError, AuthoringService } from "./authoring/authoring-service.js";
+import { RepairAccessError, RepairConflictError, RepairInputError, RepairService } from "./repair/repair-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -45,11 +46,19 @@ export interface ServerOptions {
   runService?: RunService;
   artifactService?: ArtifactService;
   authoringService?: AuthoringService;
+  repairService?: RepairService;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
 }
 
 const sessionCookieName = "doonce_session";
+
+function repairError(error: unknown, reply: import("fastify").FastifyReply) {
+  if (error instanceof RepairAccessError) return reply.code(403).send({ error: error.message, code: "repair.access_denied" });
+  if (error instanceof RepairConflictError) return reply.code(409).send({ error: error.message, code: "repair.conflict" });
+  if (error instanceof RepairInputError) return reply.code(422).send({ error: error.message, code: "repair.invalid_input" });
+  throw error;
+}
 
 export async function buildServer(options: ServerOptions = {}) {
   const allowedOrigins = allowedOriginsFromEnvironment();
@@ -417,6 +426,33 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     try { const job = await authoring.cancel(user, request.params.id); return job ? { job } : reply.code(404).send({ error: "Authoring job not found." }); }
     catch (error) { if (error instanceof AuthoringAccessError) return reply.code(403).send({ error: error.message }); if (error instanceof AuthoringInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/runs/:id/repair-proposals", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService; const repair = options.repairService; if (!auth || !repair) return reply.code(503).send({ error: "Workflow repair is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]); if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return reply.code(201).send({ proposal: await repair.propose(user, request.params.id) }); } catch (error) { return repairError(error, reply); }
+  });
+  app.get<{ Params: { id: string } }>("/api/v1/repair-proposals/:id", { schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {
+    const auth = options.authService; const repair = options.repairService; if (!auth || !repair) return reply.code(503).send({ error: "Workflow repair is not configured." }); const user = await auth.currentUser(request.cookies[sessionCookieName]); if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { const proposal = await repair.find(user, request.params.id); return proposal ? { proposal } : reply.code(404).send({ error: "Repair proposal not found." }); } catch (error) { return repairError(error, reply); }
+  });
+  app.get<{ Params: { id: string } }>("/api/v1/workflows/:id/repair-proposals", { schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {
+    const auth = options.authService; const repair = options.repairService; if (!auth || !repair) return reply.code(503).send({ error: "Workflow repair is not configured." }); const user = await auth.currentUser(request.cookies[sessionCookieName]); if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return { proposals: await repair.list(user, request.params.id) }; } catch (error) { return repairError(error, reply); }
+  });
+  app.post<{ Params: { id: string } }>("/api/v1/repair-proposals/:id/accept", { schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." }); if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." }); const auth = options.authService; const repair = options.repairService; if (!auth || !repair) return reply.code(503).send({ error: "Workflow repair is not configured." }); const user = await auth.currentUser(request.cookies[sessionCookieName]); if (!user) return reply.code(401).send({ error: "Authentication is required." }); try { return { proposal: await repair.accept(user, request.params.id) }; } catch (error) { return repairError(error, reply); }
+  });
+  app.post<{ Params: { id: string }; Body: { reason?: unknown } }>("/api/v1/repair-proposals/:id/reject", {
+    schema: {
+      params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } },
+      body: { type: "object", additionalProperties: false, properties: { reason: { type: "string", maxLength: 500 } } },
+    },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." }); const auth = options.authService; const repair = options.repairService; if (!auth || !repair) return reply.code(503).send({ error: "Workflow repair is not configured." }); const user = await auth.currentUser(request.cookies[sessionCookieName]); if (!user) return reply.code(401).send({ error: "Authentication is required." }); try { return { proposal: await repair.reject(user, request.params.id, request.body?.reason) }; } catch (error) { return repairError(error, reply); }
   });
 
   app.post<{ Body: { category?: unknown; includeRunHealth?: unknown; workflowId?: unknown; workflowVersion?: unknown } }>("/api/v1/support-reports", {

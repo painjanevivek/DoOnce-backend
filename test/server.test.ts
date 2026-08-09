@@ -18,6 +18,7 @@ import { CaptureService, type CaptureStore } from "../src/capture/capture-servic
 import { CaptureCompilationService } from "../src/compiler/capture-compilation-service.js";
 import { CaptureWorkflowCompiler } from "../src/compiler/capture-workflow-compiler.js";
 import type { AuthoringJob, AuthoringService } from "../src/authoring/authoring-service.js";
+import type { RepairService } from "../src/repair/repair-service.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
@@ -921,4 +922,14 @@ test("text authoring accepts work asynchronously and exposes polling and cancell
   const cancelled = await app.inject({ method: "POST", url: `/api/v1/authoring-jobs/${serverAuthoringJob.id}/cancel`, headers: { origin: "http://localhost:3000", cookie } });
   assert.equal(cancelled.statusCode, 200);
   assert.equal(cancelled.json().job.status, "cancelled");
+});
+
+test("repair analysis exposes a reviewable proposal before creating a draft", async (t) => {
+  const repairStep = (validProtocolFixtures.WorkflowSpec as WorkflowSpec).steps[0]!;
+  const proposal = { id: "dd111111-1111-4111-8111-111111111111", workflowId: "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", runId: serverAuthoringJob.id, baseVersion: 1, baseChecksum: "a".repeat(64), status: "pending", failureCategory: "locator-not-found", causeSummary: "The saved locator no longer matches.", failedStepId: "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", oldStep: repairStep, proposedStep: repairStep, changedFields: ["steps.locator"], evidence: { reasonCode: "locator.missing", candidateCount: 1, screenshotArtifactIds: [], precedingStepIds: [] }, confidence: .82, requiredTestPlan: ["Run the repaired draft."], provider: "deterministic", model: "semantic-locator-v1", createdAt: "2026-08-09T00:00:00.000Z", effectiveness: "unmeasured" };
+  const repairService = { async propose() { return proposal; }, async find() { return proposal; }, async list() { return [proposal]; }, async accept() { return { ...proposal, status: "accepted", acceptedDraftVersion: 2 }; }, async reject() { return { ...proposal, status: "rejected" }; } } as unknown as RepairService;
+  const app = await buildServer({ authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"), repairService }); t.after(async () => app.close());
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "repair@example.com", password: "correct-horse-battery-staple", tenantName: "Repair" } }); const cookie = signedUp.headers["set-cookie"] ?? "";
+  const analyzed = await app.inject({ method: "POST", url: `/api/v1/runs/${serverAuthoringJob.id}/repair-proposals`, headers: { origin: "http://localhost:3000", cookie } }); assert.equal(analyzed.statusCode, 201); assert.equal(analyzed.json().proposal.status, "pending");
+  const accepted = await app.inject({ method: "POST", url: `/api/v1/repair-proposals/${proposal.id}/accept`, headers: { origin: "http://localhost:3000", cookie } }); assert.equal(accepted.statusCode, 200); assert.equal(accepted.json().proposal.acceptedDraftVersion, 2);
 });
