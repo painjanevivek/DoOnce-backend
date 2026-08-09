@@ -1,4 +1,4 @@
-FROM node:24-alpine AS build
+FROM node:24.12-alpine AS build
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -7,7 +7,7 @@ COPY . ./
 RUN npm run build
 RUN npm prune --omit=dev
 
-FROM node:24-alpine AS runner
+FROM node:24.12-alpine AS runner
 
 WORKDIR /app
 RUN apk upgrade --no-cache \

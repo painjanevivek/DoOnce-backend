@@ -81,14 +81,23 @@ jobs:
         run: npm sbom --sbom-format cyclonedx > doonce-backend.sbom.json
       - run: docker build --tag doonce-backend:ci .
       - name: Scan production container
+        id: image-scan
+        continue-on-error: true
         uses: anchore/scan-action@v7
         with:
           image: doonce-backend:ci
           fail-build: true
           severity-cutoff: critical
           only-fixed: true
+      - name: Inspect container scan report
+        if: always()
+        run: cat "${{ steps.image-scan.outputs.sarif }}"
       - uses: actions/upload-artifact@v6
+        if: always()
         with:
           name: doonce-backend-sbom
           path: doonce-backend.sbom.json
           retention-days: 30
+      - name: Enforce critical container vulnerability gate
+        if: steps.image-scan.outcome == 'failure'
+        run: exit 1
