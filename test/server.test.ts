@@ -95,13 +95,39 @@ class ServerCanonicalWorkflowStore implements CanonicalWorkflowStore {
   private readonly drafts = new Map<string, CanonicalWorkflowDraft>();
 
   public async createDraft(_user: AuthenticatedUser, workflowId: string, spec: WorkflowSpec, metadata?: CanonicalWorkflowDraftMetadata): Promise<CanonicalWorkflowDraft> {
-    const draft = { id: workflowId, version: 1, status: "draft" as const, spec, checksum: "fixture-checksum", ...(metadata ? { metadata } : {}) };
+    const draft = { id: workflowId, version: 1, status: "draft" as const, spec, checksum: "a".repeat(64), ...(metadata ? { metadata } : {}) };
     this.drafts.set(workflowId, draft);
     return draft;
   }
 
   public async findDraft(_user: AuthenticatedUser, workflowId: string): Promise<CanonicalWorkflowDraft | undefined> {
     return this.drafts.get(workflowId);
+  }
+  public async listWorkflows(): Promise<import("../src/workflow/canonical-workflow-service.js").CanonicalWorkflowSummary[]> {
+    return [...this.drafts.values()].map((draft) => ({ id: draft.id, title: draft.spec.title, activeVersion: null, draftVersion: draft.version, status: "draft", updatedAt: "2026-08-09T00:00:00.000Z", lastRunAt: null, successRate: null }));
+  }
+  public async listVersions(_user: AuthenticatedUser, workflowId: string): Promise<import("../src/workflow/canonical-workflow-service.js").CanonicalWorkflowVersion[]> {
+    const draft = this.drafts.get(workflowId);
+    return draft ? [{ id: draft.id, version: draft.version, status: "draft", spec: draft.spec, checksum: draft.checksum, createdAt: "2026-08-09T00:00:00.000Z", publishedAt: null }] : [];
+  }
+  public async updateDraft(_user: AuthenticatedUser, workflowId: string, expectedChecksum: string, spec: WorkflowSpec): Promise<import("../src/workflow/canonical-workflow-service.js").CanonicalDraftMutationResult> {
+    const draft = this.drafts.get(workflowId);
+    if (!draft) return { status: "missing" };
+    if (draft.checksum !== expectedChecksum) return { status: "conflict", draft };
+    const updated = { id: draft.id, version: draft.version, status: draft.status, spec, checksum: "b".repeat(64) };
+    this.drafts.set(workflowId, draft.metadata ? { ...updated, metadata: { ...draft.metadata, source: "editor" } } : updated);
+    return { status: "updated", draft: updated };
+  }
+  public async createNextDraft(_user: AuthenticatedUser, workflowId: string): Promise<import("../src/workflow/canonical-workflow-service.js").CanonicalNextDraftResult> {
+    const draft = this.drafts.get(workflowId);
+    return draft ? { status: "exists", draft } : { status: "missing" };
+  }
+  public async publishDraft(_user: AuthenticatedUser, workflowId: string, expectedChecksum: string): Promise<import("../src/workflow/canonical-workflow-service.js").CanonicalPublishResult> {
+    const draft = this.drafts.get(workflowId);
+    if (!draft) return { status: "missing" };
+    if (draft.checksum !== expectedChecksum) return { status: "conflict", draft };
+    this.drafts.delete(workflowId);
+    return { status: "published", version: { id: draft.id, version: draft.version, status: "active", spec: draft.spec, checksum: draft.checksum, createdAt: "2026-08-09T00:00:00.000Z", publishedAt: "2026-08-09T00:00:01.000Z" } };
   }
 }
 
@@ -268,6 +294,35 @@ test("creates and reloads one validated canonical WorkflowSpec through the API",
   const loaded = await app.inject({ method: "GET", url: `/api/v1/workflow-specs/${created.json().workflow.id}`, headers: { cookie } });
   assert.equal(loaded.statusCode, 200);
   assert.deepEqual(loaded.json().workflow.spec, validProtocolFixtures.WorkflowSpec);
+
+  const listed = await app.inject({ method: "GET", url: "/api/v1/workflow-specs", headers: { cookie } });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().workflows[0].status, "draft");
+
+  const editedSpec = { ...(validProtocolFixtures.WorkflowSpec as WorkflowSpec), title: "Edited canonical workflow" };
+  const saved = await app.inject({ method: "POST", url: `/api/v1/workflow-specs/${created.json().workflow.id}/save`, headers: { origin: "http://localhost:3000", cookie }, payload: { expectedChecksum: created.json().workflow.checksum, spec: editedSpec } });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().workflow.spec.title, "Edited canonical workflow");
+
+  const staleSave = await app.inject({ method: "POST", url: `/api/v1/workflow-specs/${created.json().workflow.id}/save`, headers: { origin: "http://localhost:3000", cookie }, payload: { expectedChecksum: created.json().workflow.checksum, spec: editedSpec } });
+  assert.equal(staleSave.statusCode, 409);
+  assert.equal(staleSave.json().code, "workflow_spec.edit_conflict");
+
+  const invalidSave = await app.inject({ method: "POST", url: `/api/v1/workflow-specs/${created.json().workflow.id}/save`, headers: { origin: "http://localhost:3000", cookie }, payload: { expectedChecksum: saved.json().workflow.checksum, spec: { ...editedSpec, title: "" } } });
+  assert.equal(invalidSave.statusCode, 400);
+  assert.equal(invalidSave.json().issues.length > 0, true);
+
+  const preview = await app.inject({ method: "POST", url: `/api/v1/workflow-specs/${created.json().workflow.id}/test-preview`, headers: { origin: "http://localhost:3000", cookie }, payload: { executor: "extension", inputs: {} } });
+  assert.equal(preview.statusCode, 200);
+  assert.equal(preview.json().preview.steps[0].readiness, "ready");
+
+  const versions = await app.inject({ method: "GET", url: `/api/v1/workflow-specs/${created.json().workflow.id}/versions`, headers: { cookie } });
+  assert.equal(versions.statusCode, 200);
+  assert.equal(versions.json().versions[0].spec.title, "Edited canonical workflow");
+
+  const published = await app.inject({ method: "POST", url: `/api/v1/workflow-specs/${created.json().workflow.id}/publish`, headers: { origin: "http://localhost:3000", cookie }, payload: { expectedChecksum: saved.json().workflow.checksum } });
+  assert.equal(published.statusCode, 200);
+  assert.equal(published.json().workflow.status, "active");
 });
 
 test("negotiates and synchronizes an authenticated capture batch", async (t) => {
@@ -306,6 +361,16 @@ test("negotiates and synchronizes an authenticated capture batch", async (t) => 
   assert.equal(compiled.json().compilation.compilerVersion, "1.0.0");
   assert.equal(compiled.json().workflow.metadata.captureSessionId, request.sessionId);
   assert.equal(compiled.json().workflow.spec.format, "doonce.workflow-spec.v1");
+
+  const editedCompilation = { ...compiled.json().workflow.spec, title: "Editable captured report" };
+  const savedCompilation = await app.inject({ method: "POST", url: `/api/v1/workflow-specs/${compiled.json().workflow.id}/save`, headers: { origin: "http://localhost:3000", cookie }, payload: { expectedChecksum: compiled.json().workflow.checksum, spec: editedCompilation } });
+  assert.equal(savedCompilation.statusCode, 200);
+  assert.equal(savedCompilation.json().workflow.spec.title, "Editable captured report");
+  assert.equal(savedCompilation.json().workflow.metadata, undefined);
+  const reloadedCompilation = await app.inject({ method: "GET", url: `/api/v1/workflow-specs/${compiled.json().workflow.id}`, headers: { cookie } });
+  assert.equal(reloadedCompilation.statusCode, 200);
+  assert.equal(reloadedCompilation.json().workflow.metadata.source, "editor");
+  assert.equal(reloadedCompilation.json().workflow.metadata.compilation.workflow.title, compiled.json().workflow.spec.title);
 
   const unpaired = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/unpair", headers: { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", authorization: `Bearer ${paired.json().token}` } });
   assert.equal(unpaired.statusCode, 200);

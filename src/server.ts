@@ -407,9 +407,18 @@ export async function buildServer(options: ServerOptions = {}) {
       return reply.code(201).send({ workflow: await workflows.createDraft(user, request.body) });
     } catch (error) {
       if (error instanceof CanonicalWorkflowAccessError) return reply.code(403).send({ error: error.message, code: "workflow.access_denied" });
-      if (error instanceof CanonicalWorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow_spec.validation_failed" });
+      if (error instanceof CanonicalWorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow_spec.validation_failed", issues: error.issues });
       throw error;
     }
+  });
+
+  app.get("/api/v1/workflow-specs", async (request, reply) => {
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return { workflows: await workflows.listWorkflows(user) };
   });
 
   app.get<{ Params: { id: string } }>("/api/v1/workflow-specs/:id", {
@@ -425,6 +434,102 @@ export async function buildServer(options: ServerOptions = {}) {
       return workflow ? { workflow } : reply.code(404).send({ error: "WorkflowSpec draft not found." });
     } catch (error) {
       if (error instanceof CanonicalWorkflowInputError) return reply.code(500).send({ error: "Stored workflow data is invalid." });
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/v1/workflow-specs/:id/versions", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    const versions = await workflows.listVersions(user, request.params.id);
+    return versions.length > 0 ? { versions } : reply.code(404).send({ error: "Workflow history not found." });
+  });
+
+  app.post<{ Params: { id: string }; Body: { expectedChecksum?: unknown; spec?: unknown } }>("/api/v1/workflow-specs/:id/save", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } }, body: { type: "object", required: ["expectedChecksum", "spec"], additionalProperties: false, properties: { expectedChecksum: { type: "string", pattern: "^[a-f0-9]{64}$" }, spec: { type: "object" } } } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const result = await workflows.updateDraft(user, request.params.id, String(request.body.expectedChecksum), request.body.spec);
+      if (result.status === "missing") return reply.code(404).send({ error: "Workflow draft not found." });
+      if (result.status === "conflict") return reply.code(409).send({ error: "This draft changed in another session.", code: "workflow_spec.edit_conflict", workflow: result.draft });
+      return { workflow: result.draft };
+    } catch (error) {
+      if (error instanceof CanonicalWorkflowAccessError) return reply.code(403).send({ error: error.message, code: "workflow.access_denied" });
+      if (error instanceof CanonicalWorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow_spec.validation_failed", issues: error.issues });
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/workflow-specs/:id/next-draft", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const result = await workflows.createNextDraft(user, request.params.id);
+      if (result.status === "missing") return reply.code(404).send({ error: "Published workflow not found." });
+      return reply.code(result.status === "created" ? 201 : 200).send({ workflow: result.draft, created: result.status === "created" });
+    } catch (error) {
+      if (error instanceof CanonicalWorkflowAccessError) return reply.code(403).send({ error: error.message, code: "workflow.access_denied" });
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: { expectedChecksum?: unknown } }>("/api/v1/workflow-specs/:id/publish", {
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } }, body: { type: "object", required: ["expectedChecksum"], additionalProperties: false, properties: { expectedChecksum: { type: "string", pattern: "^[a-f0-9]{64}$" } } } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const result = await workflows.publishDraft(user, request.params.id, String(request.body.expectedChecksum));
+      if (result.status === "missing") return reply.code(404).send({ error: "Workflow draft not found." });
+      if (result.status === "conflict") return reply.code(409).send({ error: "This draft changed before publication.", code: "workflow_spec.publish_conflict", workflow: result.draft });
+      return { workflow: result.version };
+    } catch (error) {
+      if (error instanceof CanonicalWorkflowAccessError) return reply.code(403).send({ error: error.message, code: "workflow.access_denied" });
+      if (error instanceof CanonicalWorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow_spec.publication_blocked", issues: error.issues });
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/workflow-specs/:id/test-preview", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } }, body: { type: "object" } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const workflows = options.canonicalWorkflowService;
+    if (!auth || !workflows) return reply.code(503).send({ error: "WorkflowSpec service is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const preview = await workflows.previewTest(user, request.params.id, request.body);
+      return preview ? { preview } : reply.code(404).send({ error: "Workflow draft not found." });
+    } catch (error) {
+      if (error instanceof CanonicalWorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow_spec.test_input_invalid" });
       throw error;
     }
   });

@@ -71,6 +71,45 @@ test("stores and reloads capture compiler provenance with the canonical draft", 
   assert.deepEqual(JSON.parse(String(insert?.values?.[6])), metadata);
 });
 
+test("autosaves canonical drafts only when the expected checksum still matches", async () => {
+  const queries: Array<{ sql: string; values?: unknown[] }> = [];
+  const edited = { ...spec, title: "Edited workflow" };
+  const store = new PostgresCanonicalWorkflowStore(poolWithQuery(async (sql, values) => {
+    queries.push({ sql, values });
+    if (sql.startsWith("UPDATE workflow_versions SET definition")) return { rows: [{ version: 2, definition_checksum: "d".repeat(64) }] };
+    return { rows: [] };
+  }));
+
+  const result = await store.updateDraft(user, workflowId, "c".repeat(64), edited);
+
+  assert.equal(result.status, "updated");
+  const update = queries.find(({ sql }) => sql.startsWith("UPDATE workflow_versions SET definition"));
+  assert.ok(update?.sql.includes("definition_checksum = $3"));
+  assert.ok(update?.sql.includes("jsonb_set(compilation_metadata"));
+  assert.equal(update?.values?.[2], "c".repeat(64));
+  assert.ok(queries.some(({ sql }) => sql.includes("workflow.draft_edited")));
+});
+
+test("lists editor summaries with version and bounded run-health fields", async () => {
+  const store = new PostgresCanonicalWorkflowStore(poolWithQuery(async (sql) => sql.startsWith("SELECT workflows.id") ? { rows: [{ id: workflowId, title: spec.title, active_version: 1, draft_version: 2, updated_at: "2026-08-09T00:00:00.000Z", last_run_at: "2026-08-09T00:01:00.000Z", success_rate: "95" }] } : { rows: [] }));
+  const summaries = await store.listWorkflows(user);
+  assert.deepEqual(summaries[0], { id: workflowId, title: spec.title, activeVersion: 1, draftVersion: 2, status: "draft", updatedAt: "2026-08-09T00:00:00.000Z", lastRunAt: "2026-08-09T00:01:00.000Z", successRate: 95 });
+});
+
+test("publishes under a workflow lock and archives the previous active version", async () => {
+  const queries: string[] = [];
+  const store = new PostgresCanonicalWorkflowStore(poolWithQuery(async (sql) => {
+    queries.push(sql);
+    if (sql.startsWith("SELECT version, definition, definition_checksum")) return { rows: [{ version: 2, definition: spec, definition_checksum: "e".repeat(64) }] };
+    if (sql.startsWith("UPDATE workflow_versions SET status = 'active'")) return { rows: [{ workflow_id: workflowId, version: 2, status: "active", definition: spec, definition_checksum: "e".repeat(64), created_at: "2026-08-09T00:00:00.000Z", published_at: "2026-08-09T00:01:00.000Z" }] };
+    return { rows: [] };
+  }));
+  const result = await store.publishDraft(user, workflowId, "e".repeat(64));
+  assert.equal(result.status, "published");
+  assert.ok(queries.some((sql) => sql.includes("FOR UPDATE")));
+  assert.ok(queries.some((sql) => sql.includes("status = 'archived'")));
+});
+
 function poolWithQuery(query: (sql: string, values?: unknown[]) => Promise<{ rows: unknown[] }>): Pool {
   return { connect: async () => ({ query, release: () => undefined }) } as unknown as Pool;
 }

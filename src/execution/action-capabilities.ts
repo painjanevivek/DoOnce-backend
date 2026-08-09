@@ -7,6 +7,7 @@ export const executableActionKinds = [
   "upload",
   "download",
   "compare",
+  "branch",
   "ask-approval",
   "stop",
 ] as const;
@@ -69,6 +70,7 @@ export function evaluateActionCapabilities(input: ActionCapabilitiesInput): Capa
     case "read":
     case "download":
     case "compare":
+    case "branch":
       return {
         verdict: "allow",
         risk: "read-only",

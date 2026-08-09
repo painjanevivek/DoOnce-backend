@@ -35,6 +35,11 @@ class MemoryWorkflowStore implements CanonicalWorkflowStore {
     return this.draft;
   }
   public async findDraft(): Promise<CanonicalWorkflowDraft | undefined> { return this.draft; }
+  public async listWorkflows(): Promise<[]> { return []; }
+  public async listVersions(): Promise<[]> { return []; }
+  public async updateDraft(): Promise<{ status: "missing" }> { return { status: "missing" }; }
+  public async createNextDraft(): Promise<{ status: "missing" }> { return { status: "missing" }; }
+  public async publishDraft(): Promise<{ status: "missing" }> { return { status: "missing" }; }
 }
 
 function captureStoreWith(session: CaptureSession | undefined): CaptureStore {

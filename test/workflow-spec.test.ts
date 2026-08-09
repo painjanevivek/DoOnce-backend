@@ -9,6 +9,7 @@ const ids = [
   "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", "b0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
   "d0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", "e0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", "f0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
   "10c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", "20c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", "30c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
+  "40c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
 ] as const;
 
 export const workflowSpecFixture = {
@@ -28,8 +29,9 @@ export const workflowSpecFixture = {
     { id: ids[4], action: "type", name: "Set report date", expectedOutcome: "The report date is shown.", target, inputName: "report_date" },
     { id: ids[5], action: "download", name: "Download report", expectedOutcome: "A CSV report is downloaded.", target },
     { id: ids[6], action: "compare", name: "Check heading", expectedOutcome: "The heading matches.", target, operator: "contains", expected: "Weekly" },
-    { id: ids[7], action: "ask-approval", name: "Confirm export", expectedOutcome: "An operator confirms the export.", prompt: "Continue with the reviewed export?" },
-    { id: ids[8], action: "stop", name: "Finish", expectedOutcome: "The workflow stops.", reason: "Workflow complete." },
+    { id: ids[7], action: "branch", name: "Choose region path", expectedOutcome: "The matching path is selected.", inputName: "region", operator: "equals", expected: "North", ifTrueStepId: ids[8], ifFalseStepId: ids[9] },
+    { id: ids[8], action: "ask-approval", name: "Confirm export", expectedOutcome: "An operator confirms the export.", prompt: "Continue with the reviewed export?" },
+    { id: ids[9], action: "stop", name: "Finish", expectedOutcome: "The workflow stops.", reason: "Workflow complete." },
   ],
 } as const;
 

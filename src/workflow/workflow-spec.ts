@@ -11,7 +11,7 @@ import type {
 
 export const workflowSpecFormat = "doonce.workflow-spec.v1" as const;
 export const workflowSpecSchemaVersion = 1 as const;
-export const workflowSpecActionKinds = ["navigate", "wait", "read", "select", "type", "download", "compare", "ask-approval", "stop"] as const satisfies readonly WorkflowActionKind[];
+export const workflowSpecActionKinds = ["navigate", "wait", "read", "select", "type", "download", "compare", "branch", "ask-approval", "stop"] as const satisfies readonly WorkflowActionKind[];
 export const workflowSpecInputKinds = ["text", "date", "select"] as const;
 
 export type WorkflowSpecActionKind = WorkflowActionKind;

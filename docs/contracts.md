@@ -41,3 +41,5 @@ The apply path uses one transaction. A failed record prevents partial migration,
 ## Changing a contract
 
 Update the backend schema and generated type surface together, export snapshots with `npm run contracts:export`, and commit the refreshed manifests in both repositories. Add one valid fixture and at least one invalid compatibility test for every new or changed contract branch. Breaking meanings require a new schema version; do not silently reinterpret version 1.
+
+The visual authoring API, optimistic concurrency model, forward-only branches, and secret-input behavior are documented in [visual-workflow-editor.md](./visual-workflow-editor.md).

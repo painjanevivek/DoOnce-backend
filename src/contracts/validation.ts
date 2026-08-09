@@ -46,14 +46,28 @@ function validateWorkflowSemantics(workflow: WorkflowSpec): ValidationIssue[] {
   const inputNames = new Set<string>();
   for (const [index, input] of workflow.inputs.entries()) {
     if (inputNames.has(input.name)) errors.push(issue("workflow.input_duplicate", `/inputs/${index}/name`, `Input ${index + 1} repeats the name "${input.name}".`));
+    if (input.secret && input.defaultValue !== undefined) errors.push(issue("workflow.secret_default", `/inputs/${index}/defaultValue`, `Input ${index + 1} is secret and cannot store a default value.`));
+    if (input.kind === "select" && input.defaultValue !== undefined && !input.options?.includes(input.defaultValue)) errors.push(issue("workflow.default_not_option", `/inputs/${index}/defaultValue`, `Input ${index + 1} needs a default value from its option list.`));
     inputNames.add(input.name);
   }
   const stepIds = new Set<string>();
+  const stepIndexes = new Map<string, number>();
   for (const [index, step] of workflow.steps.entries()) {
     if (stepIds.has(step.id)) errors.push(issue("workflow.step_id_duplicate", `/steps/${index}/id`, `Step ${index + 1} needs a unique identifier.`));
     stepIds.add(step.id);
+    if (!stepIndexes.has(step.id)) stepIndexes.set(step.id, index);
+  }
+  for (const [index, step] of workflow.steps.entries()) {
     if ("target" in step && !workflow.allowedDomains.includes(step.target.domain)) errors.push(issue("workflow.domain_not_allowed", `/steps/${index}/target/domain`, `Step ${index + 1} uses a domain that is not in this workflow's approved domain list.`));
-    if ((step.action === "type" || step.action === "select") && !inputNames.has(step.inputName)) errors.push(issue("workflow.input_missing", `/steps/${index}/inputName`, `Step ${index + 1} needs a declared workflow input.`));
+    if ((step.action === "type" || step.action === "select" || step.action === "branch") && !inputNames.has(step.inputName)) errors.push(issue("workflow.input_missing", `/steps/${index}/inputName`, `Step ${index + 1} needs a declared workflow input.`));
+    if (step.action === "branch") {
+      const targets = [step.ifTrueStepId, step.ifFalseStepId].filter((target): target is string => target !== undefined);
+      for (const target of targets) {
+        const targetIndex = stepIndexes.get(target) ?? -1;
+        if (targetIndex < 0) errors.push(issue("workflow.branch_target_missing", `/steps/${index}`, `Step ${index + 1} points to a branch destination that does not exist.`));
+        else if (targetIndex <= index) errors.push(issue("workflow.branch_target_backward", `/steps/${index}`, `Step ${index + 1} must branch forward to avoid a workflow cycle.`));
+      }
+    }
   }
   return errors;
 }

@@ -1,7 +1,7 @@
 // Generated contract surface for contracts/protocol.v1.schema.json. Do not add runtime logic here.
 export type SchemaVersion = 1;
 export type ExecutorKind = "extension" | "hosted-browser";
-export type WorkflowActionKind = "navigate" | "wait" | "read" | "select" | "type" | "download" | "compare" | "ask-approval" | "stop";
+export type WorkflowActionKind = "navigate" | "wait" | "read" | "select" | "type" | "download" | "compare" | "branch" | "ask-approval" | "stop";
 export type LocatorStrategy = "id" | "capture-id" | "role" | "label" | "text";
 
 export interface LocatorCandidate { strategy: LocatorStrategy; value: string; confidence: number }
@@ -14,7 +14,7 @@ export interface ElementEvidence {
 export interface CapturedValue { classification: "literal-candidate" | "variable-candidate" | "secret-placeholder" | "intentionally-omitted"; placeholder: string; length: number }
 export interface PageTarget { domain: string; path: string }
 export interface ElementTarget extends PageTarget { locator: LocatorSpec }
-export interface WorkflowInputDefinition { name: string; label: string; kind: "text" | "date" | "select"; required: boolean; options?: string[] }
+export interface WorkflowInputDefinition { name: string; label: string; kind: "text" | "date" | "select"; required: boolean; options?: string[]; defaultValue?: string; secret?: boolean }
 
 interface WorkflowStepBase { id: string; action: WorkflowActionKind; name: string; expectedOutcome: string }
 export interface NavigateStep extends WorkflowStepBase { action: "navigate"; target: PageTarget }
@@ -24,9 +24,10 @@ export interface SelectStep extends WorkflowStepBase { action: "select"; target:
 export interface TypeStep extends WorkflowStepBase { action: "type"; target: ElementTarget; inputName: string }
 export interface DownloadStep extends WorkflowStepBase { action: "download"; target: ElementTarget }
 export interface CompareStep extends WorkflowStepBase { action: "compare"; target: ElementTarget; operator: "equals" | "contains" | "matches"; expected: string }
+export interface BranchStep extends WorkflowStepBase { action: "branch"; inputName: string; operator: "equals" | "contains" | "matches"; expected: string; ifTrueStepId: string; ifFalseStepId?: string }
 export interface ApprovalStep extends WorkflowStepBase { action: "ask-approval"; prompt: string }
 export interface StopStep extends WorkflowStepBase { action: "stop"; reason: string }
-export type WorkflowStep = NavigateStep | WaitStep | ReadStep | SelectStep | TypeStep | DownloadStep | CompareStep | ApprovalStep | StopStep;
+export type WorkflowStep = NavigateStep | WaitStep | ReadStep | SelectStep | TypeStep | DownloadStep | CompareStep | BranchStep | ApprovalStep | StopStep;
 
 export interface WorkflowSpec {
   schemaVersion: SchemaVersion;

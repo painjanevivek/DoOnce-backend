@@ -9,6 +9,12 @@ test("allows read-only report downloads", () => {
   assert.equal(decision.risk, "read-only");
 });
 
+test("allows deterministic branch evaluation without introducing a write", () => {
+  const decision = evaluateActionCapabilities({ action: "branch" });
+  assert.equal(decision.verdict, "allow");
+  assert.equal(decision.risk, "read-only");
+});
+
 test("requires approval for a reversible form write", () => {
   const decision = evaluateActionCapabilities({ action: "type" });
   assert.equal(decision.verdict, "needs-approval");
