@@ -5,7 +5,7 @@
   "packageManager": "npm@11.6.2",
   "type": "module",
   "engines": {
-    "node": "24.12.x"
+    "node": ">=24.12.0 <25"
   },
   "scripts": {
     "pretest": "tsx --test test/artifact-service.test.ts test/authoring-service.test.ts test/postgres-authoring-job-store.test.ts test/repair-service.test.ts test/postgres-repair-store.test.ts test/execution-router.test.ts test/schedule-service.test.ts test/session-profile-service.test.ts test/webhook-service.test.ts test/video-service.test.ts test/resumable-video-store.test.ts test/video-server.test.ts test/observability.test.ts test/load-smoke.test.ts test/beta-service.test.ts",

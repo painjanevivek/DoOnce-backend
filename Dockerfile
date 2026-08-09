@@ -7,13 +7,16 @@ COPY . ./
 RUN npm run build
 RUN npm prune --omit=dev
 
-FROM node:24.12-alpine AS runner
+FROM node:24.19.0-alpine AS runner
 
 WORKDIR /app
 RUN apk upgrade --no-cache \
   && apk add --no-cache chromium ffmpeg tesseract-ocr \
   && mkdir -p /var/lib/doonce/artifacts /var/lib/doonce/videos \
-  && chown -R node:node /var/lib/doonce
+  && chown -R node:node /var/lib/doonce \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+    /usr/local/bin/yarn /usr/local/bin/yarnpkg /usr/local/bin/pnpm /usr/local/bin/pnpx
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=4000
