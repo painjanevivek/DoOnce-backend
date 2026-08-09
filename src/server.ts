@@ -19,6 +19,7 @@ import {
   type ActionKind,
   type SensitiveFieldKind,
 } from "./execution/action-capabilities.js";
+import { CaptureConflictError, CaptureInputError, CaptureService } from "./capture/capture-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -32,6 +33,8 @@ export interface ServerOptions {
   authService?: AuthService;
   workflowService?: WorkflowService;
   canonicalWorkflowService?: CanonicalWorkflowService;
+  captureService?: CaptureService;
+  extensionOrigins?: string[];
   runReceiptStore?: LocalDemoReceiptStore;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
@@ -41,6 +44,8 @@ const sessionCookieName = "doonce_session";
 
 export async function buildServer(options: ServerOptions = {}) {
   const allowedOrigins = allowedOriginsFromEnvironment();
+  const extensionOrigins = options.extensionOrigins ?? (process.env.DOONCE_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean);
+  const browserOrigins = [...allowedOrigins, ...extensionOrigins];
   const operationalControls = options.operationalControls ?? operationalControlsFromEnvironment();
   const app = Fastify({
     ajv: {
@@ -80,7 +85,7 @@ export async function buildServer(options: ServerOptions = {}) {
   });
   await app.register(cors, {
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || browserOrigins.includes(origin) || isExtensionOrigin(origin)) {
         callback(null, true);
         return;
       }
@@ -88,7 +93,7 @@ export async function buildServer(options: ServerOptions = {}) {
     },
     credentials: true,
     methods: ["GET", "POST"],
-    allowedHeaders: ["content-type"],
+    allowedHeaders: ["content-type", "authorization"],
   });
   await app.register(cookie);
   await app.register(rateLimit, { global: false, max: 100, timeWindow: "1 minute" });
@@ -126,6 +131,78 @@ export async function buildServer(options: ServerOptions = {}) {
   });
 
   app.get("/api/v1/system/capabilities", async () => capabilitiesSummary());
+
+  app.post<{ Body: unknown }>("/api/v1/capture-sessions/handshake", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    schema: { body: { type: "object" } },
+  }, async (request, reply) => {
+    const captures = options.captureService;
+    if (!captures) return reply.code(503).send({ error: "Capture synchronization is not configured." });
+    try {
+      return captures.handshake(request.body);
+    } catch (error) {
+      if (error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.handshake_invalid" });
+      throw error;
+    }
+  });
+
+  app.post("/api/v1/capture-sessions/pairing-codes", {
+    config: { rateLimit: { max: 5, timeWindow: "10 minutes" } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const captures = options.captureService;
+    const auth = options.authService;
+    if (!captures || !auth) return reply.code(503).send({ error: "Capture pairing is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return captures.createPairingCode(user);
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/capture-sessions/pair", {
+    config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
+    schema: { body: { type: "object", required: ["code"], additionalProperties: false, properties: { code: { type: "string", minLength: 12, maxLength: 32 } } } },
+  }, async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin && !isExtensionOrigin(origin) && !browserOrigins.includes(origin)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const captures = options.captureService;
+    if (!captures) return reply.code(503).send({ error: "Capture pairing is not configured." });
+    try {
+      return await captures.exchangePairingCode(request.body);
+    } catch (error) {
+      if (error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.pairing_invalid" });
+      throw error;
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/capture-sessions/:id/sync", {
+    config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } }, body: { type: "object" } },
+  }, async (request, reply) => {
+    const requestOrigin = request.headers.origin;
+    if (requestOrigin && !browserOrigins.includes(requestOrigin) && !isExtensionOrigin(requestOrigin)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const captures = options.captureService;
+    const auth = options.authService;
+    if (!captures || !auth) return reply.code(503).send({ error: "Capture synchronization is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? await captures.authenticateExtension(request.headers.authorization);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return await captures.sync(user, request.params.id, request.body);
+    } catch (error) {
+      if (error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.batch_invalid" });
+      if (error instanceof CaptureConflictError) return reply.code(409).send({ error: error.message, code: "capture.cursor_conflict" });
+      throw error;
+    }
+  });
+
+  app.post("/api/v1/capture-sessions/unpair", {
+    config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
+  }, async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin && !isExtensionOrigin(origin) && !browserOrigins.includes(origin)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const captures = options.captureService;
+    if (!captures) return reply.code(503).send({ error: "Capture pairing is not configured." });
+    return (await captures.revokeExtension(request.headers.authorization)) ? { disconnected: true } : reply.code(401).send({ error: "Extension credential is invalid." });
+  });
 
   app.get("/api/v1/system/safety", async (_request, reply) => {
     reply
@@ -621,6 +698,10 @@ function setSessionCookie(reply: { setCookie(name: string, value: string, option
 
 function hasAllowedOrigin(origin: string | undefined, allowedOrigins: readonly string[]): boolean {
   return typeof origin === "string" && allowedOrigins.includes(origin);
+}
+
+function isExtensionOrigin(origin: string): boolean {
+  return /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
 }
 
 function redactRunReceipt(receipt: RunReceipt) {

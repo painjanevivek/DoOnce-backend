@@ -4,7 +4,7 @@ import addFormatsModule from "ajv-formats";
 import type { WorkflowSpec } from "./protocol.js";
 
 export const protocolContractNames = [
-  "WorkflowSpec", "LocatorSpec", "WorkflowInputDefinition", "RuntimeCapabilities", "CaptureSession", "RecordedAction",
+  "WorkflowSpec", "LocatorSpec", "WorkflowInputDefinition", "RuntimeCapabilities", "CaptureSession", "RecordedAction", "CaptureHandshake", "CaptureSyncRequest", "CaptureSyncAck",
   "RunRequest", "StepResult", "RunResult", "RepairProposal", "ExtensionMessage", "ApiError",
 ] as const;
 

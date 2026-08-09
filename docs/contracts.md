@@ -8,11 +8,15 @@ All protocol objects reject unknown fields. Workflow validation also checks rule
 
 ## How an ordinary workflow moves through the system
 
-1. A capture compiler creates `doonce.workflow-spec.v1`.
-2. The API validates the spec before accepting a draft.
-3. PostgreSQL stores the spec with schema version, source, and a generated SHA-256 checksum.
-4. The service validates the stored value again when loading it.
-5. Dashboard and extension snapshots verify the backend artifact hashes before compiling.
+1. The extension negotiates `CaptureHandshake`, records a recoverable `CaptureSession`, and sends ordered `CaptureSyncRequest` batches.
+2. The API acknowledges each idempotent batch with `CaptureSyncAck`; a final acknowledgment makes the session immutable.
+3. A capture compiler creates `doonce.workflow-spec.v1` from the finalized timeline.
+4. The API validates the spec before accepting a draft.
+5. PostgreSQL stores the spec with schema version, source, and a generated SHA-256 checksum.
+6. The service validates the stored value again when loading it.
+7. Dashboard and extension snapshots verify the backend artifact hashes before compiling.
+
+Recorded actions carry stable IDs, sequence numbers, normalized page state, semantic element evidence, and value classifications. Protected values are represented by typed placeholders rather than raw text. Element evidence stores durable locator candidates; ephemeral DOM handles are never part of the protocol.
 
 A report download is an ordinary `download` step. Its target, locator candidates, and expected outcome live in the spec; no report-specific executor behavior is permitted.
 

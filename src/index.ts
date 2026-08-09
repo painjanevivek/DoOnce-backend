@@ -9,6 +9,8 @@ import { PostgresRunReceiptStore } from "./runner/postgres-run-receipt-store.js"
 import { PostgresSupportReportStore } from "./support/postgres-support-report-store.js";
 import { assertRuntimeDatabaseRole } from "./database/runtime-role.js";
 import { Pool } from "pg";
+import { CaptureService } from "./capture/capture-service.js";
+import { PostgresCaptureStore } from "./capture/postgres-capture-store.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -28,6 +30,7 @@ const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
   ...(pool ? { canonicalWorkflowService: new CanonicalWorkflowService(new PostgresCanonicalWorkflowStore(pool)) } : {}),
+  ...(pool ? { captureService: new CaptureService(new PostgresCaptureStore(pool)) } : {}),
   ...(runReceiptStore ? { runReceiptStore } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });

@@ -14,6 +14,8 @@ import type { OperationalControls } from "../src/system/operational-controls.js"
 import type { SubmittedSupportReport, SupportDiagnostic, SupportReportCategory, SupportReportStore } from "../src/support/postgres-support-report-store.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 import { validProtocolFixtures } from "./fixtures/protocol-v1.js";
+import { CaptureService, type CaptureStore } from "../src/capture/capture-service.js";
+import type { CaptureSyncAck, CaptureSyncRequest } from "../src/contracts/protocol.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
@@ -100,6 +102,25 @@ class ServerCanonicalWorkflowStore implements CanonicalWorkflowStore {
   public async findDraft(_user: AuthenticatedUser, workflowId: string): Promise<CanonicalWorkflowDraft | undefined> {
     return this.drafts.get(workflowId);
   }
+}
+
+class ServerCaptureStore implements CaptureStore {
+  public readonly batches: CaptureSyncRequest[] = [];
+  private codeHash = "";
+  private readonly identities = new Map<string, AuthenticatedUser>();
+  public async syncBatch(_user: AuthenticatedUser, request: CaptureSyncRequest): Promise<CaptureSyncAck> {
+    this.batches.push(request);
+    return { schemaVersion: 1, sessionId: request.sessionId, batchId: request.batchId, acceptedThrough: request.actions.at(-1)?.sequence ?? request.cursor, status: request.final ? "finalized" : "accepted" };
+  }
+  public async createPairingCode(_user: AuthenticatedUser, codeHash: string): Promise<void> { this.codeHash = codeHash; }
+  public async exchangePairingCode(codeHash: string, tokenHash: string): Promise<AuthenticatedUser | undefined> {
+    if (codeHash !== this.codeHash) return undefined;
+    const user = { tenantId: "a0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", userId: "b0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", role: "owner" } as AuthenticatedUser;
+    this.identities.set(tokenHash, user);
+    return user;
+  }
+  public async findExtensionIdentity(tokenHash: string): Promise<AuthenticatedUser | undefined> { return this.identities.get(tokenHash); }
+  public async revokeExtensionToken(tokenHash: string): Promise<boolean> { return this.identities.delete(tokenHash); }
 }
 
 class FailingWorkflowStore extends ServerWorkflowStore {
@@ -244,6 +265,38 @@ test("creates and reloads one validated canonical WorkflowSpec through the API",
   const loaded = await app.inject({ method: "GET", url: `/api/v1/workflow-specs/${created.json().workflow.id}`, headers: { cookie } });
   assert.equal(loaded.statusCode, 200);
   assert.deepEqual(loaded.json().workflow.spec, validProtocolFixtures.WorkflowSpec);
+});
+
+test("negotiates and synchronizes an authenticated capture batch", async (t) => {
+  const captureStore = new ServerCaptureStore();
+  const app = await buildServer({
+    authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
+    captureService: new CaptureService(captureStore),
+  });
+  t.after(async () => app.close());
+  const handshake = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/handshake", payload: validProtocolFixtures.CaptureHandshake });
+  assert.equal(handshake.statusCode, 200);
+  assert.equal(handshake.json().maxBatchSize, 50);
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "capture@example.com", password: "correct-horse-battery-staple", tenantName: "Capture Workspace" } });
+  const cookie = signedUp.cookies[0]?.name && `${signedUp.cookies[0].name}=${signedUp.cookies[0].value}`;
+  assert.ok(cookie);
+  const pairingCode = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/pairing-codes", headers: { origin: "http://localhost:3000", cookie } });
+  assert.equal(pairingCode.statusCode, 200);
+  const paired = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/pair", headers: { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop" }, payload: { code: pairingCode.json().code } });
+  assert.equal(paired.statusCode, 200);
+  const request = validProtocolFixtures.CaptureSyncRequest as CaptureSyncRequest;
+  const sync = await app.inject({ method: "POST", url: `/api/v1/capture-sessions/${request.sessionId}/sync`, headers: { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", authorization: `Bearer ${paired.json().token}` }, payload: request });
+  assert.equal(sync.statusCode, 200);
+  assert.equal(sync.json().acceptedThrough, 0);
+  assert.equal(captureStore.batches.length, 1);
+
+  const unpaired = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/unpair", headers: { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", authorization: `Bearer ${paired.json().token}` } });
+  assert.equal(unpaired.statusCode, 200);
+  assert.equal(unpaired.json().disconnected, true);
+
+  const rejectedAfterUnpair = await app.inject({ method: "POST", url: `/api/v1/capture-sessions/${request.sessionId}/sync`, headers: { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", authorization: `Bearer ${paired.json().token}` }, payload: request });
+  assert.equal(rejectedAfterUnpair.statusCode, 401);
+  assert.equal(captureStore.batches.length, 1);
 });
 
 test("unexpected API errors do not disclose internal details", async (t) => {

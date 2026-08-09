@@ -6,6 +6,12 @@ export type LocatorStrategy = "id" | "capture-id" | "role" | "label" | "text";
 
 export interface LocatorCandidate { strategy: LocatorStrategy; value: string; confidence: number }
 export interface LocatorSpec { schemaVersion: SchemaVersion; primary: LocatorCandidate; fallbacks: LocatorCandidate[] }
+export interface PageState { capturedAt: string; origin: string; path: string; urlPattern: string; navigationId: string; titleHint?: string; domFingerprint?: string }
+export interface ElementEvidence {
+  role?: string; accessibleName?: string; testId?: string; tagName: string; inputType?: string; textHint?: string; cssCandidate?: string;
+  framePath: string[]; domFingerprint: string; visibility: { inViewport: boolean; ratio: number; viewportWidth: number; viewportHeight: number }; locator: LocatorSpec;
+}
+export interface CapturedValue { classification: "literal-candidate" | "variable-candidate" | "secret-placeholder" | "intentionally-omitted"; placeholder: string; length: number }
 export interface PageTarget { domain: string; path: string }
 export interface ElementTarget extends PageTarget { locator: LocatorSpec }
 export interface WorkflowInputDefinition { name: string; label: string; kind: "text" | "date" | "select"; required: boolean; options?: string[] }
@@ -47,9 +53,15 @@ export interface RecordedAction {
   occurredAt: string;
   origin: string;
   path: string;
-  eventKind: "click" | "change" | "input" | "navigate" | "download";
-  locator: LocatorSpec;
+  eventKind: "click" | "change" | "input" | "select" | "toggle" | "submit" | "navigate" | "reload" | "redirect" | "download" | "download-start" | "download-complete" | "tab-create" | "tab-switch" | "wait-transition";
+  locator?: LocatorSpec;
   actionHint?: "download";
+  target?: ElementEvidence;
+  value?: CapturedValue;
+  before?: PageState;
+  after?: PageState;
+  tabId?: number;
+  frameId?: number;
 }
 
 export interface CaptureSession {
@@ -58,10 +70,19 @@ export interface CaptureSession {
   id: string;
   startedAt: string;
   endedAt?: string;
-  status: "recording" | "paused" | "completed";
+  status: "recording" | "paused" | "stopped" | "synchronizing" | "finalized" | "discarded" | "completed";
   approvedOrigins: string[];
   actions: RecordedAction[];
+  extensionVersion?: string;
+  updatedAt?: string;
+  syncCursor?: number;
+  retryCount?: number;
 }
+
+export type CaptureCapability = "semantic-elements" | "frames" | "shadow-dom" | "navigation" | "downloads" | "tabs" | "offline-buffer";
+export interface CaptureHandshake { schemaVersion: SchemaVersion; extensionVersion: string; capabilities: CaptureCapability[]; maxBatchSize: number }
+export interface CaptureSyncRequest { schemaVersion: SchemaVersion; sessionId: string; batchId: string; cursor: number; actions: RecordedAction[]; final: boolean }
+export interface CaptureSyncAck { schemaVersion: SchemaVersion; sessionId: string; batchId: string; acceptedThrough: number; status: "accepted" | "duplicate" | "finalized"; retryAfterMs?: number }
 
 export interface RunRequest {
   schemaVersion: SchemaVersion;
