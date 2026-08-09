@@ -10,7 +10,8 @@ RUN npm prune --omit=dev
 FROM node:24-alpine AS runner
 
 WORKDIR /app
-RUN apk add --no-cache chromium ffmpeg tesseract-ocr \
+RUN apk upgrade --no-cache \
+  && apk add --no-cache chromium ffmpeg tesseract-ocr \
   && mkdir -p /var/lib/doonce/artifacts /var/lib/doonce/videos \
   && chown -R node:node /var/lib/doonce
 ENV NODE_ENV=production
