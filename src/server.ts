@@ -22,6 +22,7 @@ import {
 import { CaptureConflictError, CaptureInputError, CaptureService } from "./capture/capture-service.js";
 import { CaptureCompilationNotFoundError, CaptureCompilationService } from "./compiler/capture-compilation-service.js";
 import { CaptureCompilationError } from "./compiler/capture-workflow-compiler.js";
+import { RunAccessError, RunConflictError, RunInputError, RunService } from "./runner/run-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -39,6 +40,7 @@ export interface ServerOptions {
   captureCompilationService?: CaptureCompilationService;
   extensionOrigins?: string[];
   runReceiptStore?: LocalDemoReceiptStore;
+  runService?: RunService;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
 }
@@ -532,6 +534,84 @@ export async function buildServer(options: ServerOptions = {}) {
       if (error instanceof CanonicalWorkflowInputError) return reply.code(400).send({ error: error.message, code: "workflow_spec.test_input_invalid" });
       throw error;
     }
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/runs", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    schema: { body: { type: "object" } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService;
+    const runs = options.runService;
+    if (!auth || !runs) return reply.code(503).send({ error: "Workflow execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const created = await runs.create(user, request.body);
+      return reply.code(created.created ? 201 : 200).send(created);
+    } catch (error) {
+      if (error instanceof RunAccessError) return reply.code(403).send({ error: error.message, code: "run.access_denied" });
+      if (error instanceof RunConflictError) return reply.code(409).send({ error: error.message, code: "run.idempotency_conflict" });
+      if (error instanceof RunInputError) return reply.code(400).send({ error: error.message, code: "run.invalid_request" });
+      throw error;
+    }
+  });
+
+  app.get("/api/v1/runs", async (request, reply) => {
+    const auth = options.authService; const runs = options.runService;
+    if (!auth || !runs) return reply.code(503).send({ error: "Workflow execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return { runs: await runs.list(user) };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id", async (request, reply) => {
+    const auth = options.authService; const runs = options.runService;
+    if (!auth || !runs) return reply.code(503).send({ error: "Workflow execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { const run = await runs.find(user, request.params.id); return run ? { run } : reply.code(404).send({ error: "Run not found." }); }
+    catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/runs/:id/cancel", async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService; const runs = options.runService;
+    if (!auth || !runs) return reply.code(503).send({ error: "Workflow execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { const run = await runs.cancel(user, request.params.id); return run ? { run } : reply.code(404).send({ error: "Run not found." }); }
+    catch (error) { if (error instanceof RunAccessError) return reply.code(403).send({ error: error.message }); if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/extension/runs/claim", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
+    const captures = options.captureService; const runs = options.runService;
+    if (!captures || !runs) return reply.code(503).send({ error: "Extension execution is not configured." });
+    const user = await captures.authenticateExtension(request.headers.authorization);
+    if (!user) return reply.code(401).send({ error: "Extension authentication is required." });
+    try { const lease = await runs.claim(user, request.body); return lease ? { lease } : reply.code(204).send(); }
+    catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message, code: "run.extension_incompatible" }); throw error; }
+  });
+
+  app.post<{ Params: { id: string }; Body: { leaseToken?: unknown } }>("/api/v1/extension/runs/:id/heartbeat", { config: { rateLimit: { max: 240, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
+    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined;
+    if (!user || !options.runService) return reply.code(401).send({ error: "Extension authentication is required." });
+    try { const run = await options.runService.heartbeat(user, request.params.id, request.body.leaseToken); return run ? { run } : reply.code(409).send({ error: "The run lease expired.", code: "run.lease_expired" }); }
+    catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/extension/runs/:id/checkpoint", { config: { rateLimit: { max: 240, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
+    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined;
+    if (!user || !options.runService) return reply.code(401).send({ error: "Extension authentication is required." });
+    try { const run = await options.runService.checkpoint(user, request.params.id, request.body); return run ? { run } : reply.code(409).send({ error: "The run lease expired.", code: "run.lease_expired" }); }
+    catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/extension/runs/:id/result", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
+    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined;
+    if (!user || !options.runService) return reply.code(401).send({ error: "Extension authentication is required." });
+    try { const run = await options.runService.finish(user, request.params.id, request.body); return run ? { run } : reply.code(409).send({ error: "The run lease expired.", code: "run.lease_expired" }); }
+    catch (error) { if (error instanceof RunConflictError) return reply.code(409).send({ error: error.message, code: "run.result_conflict" }); if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
   });
 
   app.get("/api/v1/workflows", async (request, reply) => {

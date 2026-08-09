@@ -13,6 +13,8 @@ import { CaptureService } from "./capture/capture-service.js";
 import { PostgresCaptureStore } from "./capture/postgres-capture-store.js";
 import { CaptureWorkflowCompiler } from "./compiler/capture-workflow-compiler.js";
 import { CaptureCompilationService } from "./compiler/capture-compilation-service.js";
+import { PostgresRunStore } from "./runner/postgres-run-store.js";
+import { RunService } from "./runner/run-service.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -31,6 +33,7 @@ const runReceiptStore = pool && sessionSecret ? new PostgresRunReceiptStore(pool
 const canonicalWorkflowService = pool ? new CanonicalWorkflowService(new PostgresCanonicalWorkflowStore(pool)) : undefined;
 const captureService = pool ? new CaptureService(new PostgresCaptureStore(pool)) : undefined;
 const captureCompilationService = captureService && canonicalWorkflowService ? new CaptureCompilationService(captureService, new CaptureWorkflowCompiler(), canonicalWorkflowService) : undefined;
+const runService = pool ? new RunService(new PostgresRunStore(pool)) : undefined;
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
@@ -38,6 +41,7 @@ const app = await buildServer({
   ...(captureService ? { captureService } : {}),
   ...(captureCompilationService ? { captureCompilationService } : {}),
   ...(runReceiptStore ? { runReceiptStore } : {}),
+  ...(runService ? { runService } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (pool) app.addHook("onClose", async () => pool.end());

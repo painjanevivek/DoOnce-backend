@@ -130,6 +130,12 @@ export interface StepResult {
   reasonCode?: string;
   startedAt: string;
   finishedAt: string;
+  selectedLocator?: LocatorCandidate;
+  locatorConfidence?: number;
+  outputs?: Record<string, string>;
+  evidenceRefs?: string[];
+  retryCount?: number;
+  observedPage?: PageState;
 }
 
 export interface RunResult {
