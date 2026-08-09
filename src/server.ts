@@ -24,6 +24,7 @@ import { CaptureCompilationNotFoundError, CaptureCompilationService } from "./co
 import { CaptureCompilationError } from "./compiler/capture-workflow-compiler.js";
 import { RunAccessError, RunConflictError, RunInputError, RunService } from "./runner/run-service.js";
 import { ArtifactInputError, ArtifactNotFoundError, ArtifactService } from "./artifacts/artifact-service.js";
+import { AuthoringAccessError, AuthoringConflictError, AuthoringInputError, AuthoringLimitError, AuthoringService } from "./authoring/authoring-service.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -43,6 +44,7 @@ export interface ServerOptions {
   runReceiptStore?: LocalDemoReceiptStore;
   runService?: RunService;
   artifactService?: ArtifactService;
+  authoringService?: AuthoringService;
   supportReportStore?: SupportReportStore;
   operationalControls?: OperationalControls;
 }
@@ -363,6 +365,58 @@ export async function buildServer(options: ServerOptions = {}) {
     const user = await auth.currentUser(request.cookies[sessionCookieName]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     return { user };
+  });
+
+  app.post<{ Body: unknown }>("/api/v1/authoring-jobs", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService; const authoring = options.authoringService;
+    if (!auth || !authoring) return reply.code(503).send({ error: "Text authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const queued = await authoring.enqueue(user, request.body);
+      queueMicrotask(() => { void authoring.process(user, queued.job.id).catch((error: unknown) => request.log.error({ name: error instanceof Error ? error.name : "UnknownError" }, "Authoring worker failed")); });
+      return reply.code(queued.created ? 202 : 200).send(queued);
+    } catch (error) {
+      if (error instanceof AuthoringAccessError) return reply.code(403).send({ error: error.message, code: "authoring.access_denied" });
+      if (error instanceof AuthoringConflictError) return reply.code(409).send({ error: error.message, code: "authoring.idempotency_conflict" });
+      if (error instanceof AuthoringLimitError) return reply.code(429).send({ error: error.message, code: "authoring.limit_reached" });
+      if (error instanceof AuthoringInputError) return reply.code(400).send({ error: error.message, code: "authoring.invalid_input" });
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/v1/authoring-jobs/:id", { schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {
+    const auth = options.authService; const authoring = options.authoringService;
+    if (!auth || !authoring) return reply.code(503).send({ error: "Text authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      const job = await authoring.find(user, request.params.id);
+      if (!job) return reply.code(404).send({ error: "Authoring job not found." });
+      if (job.status === "queued") queueMicrotask(() => { void authoring.process(user, job.id).catch((error: unknown) => request.log.error({ name: error instanceof Error ? error.name : "UnknownError" }, "Authoring worker failed")); });
+      return { job };
+    } catch (error) { if (error instanceof AuthoringInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/v1/authoring-jobs/:id/events", { schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {
+    const auth = options.authService; const authoring = options.authoringService;
+    if (!auth || !authoring) return reply.code(503).send({ error: "Text authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { return { events: await authoring.events(user, request.params.id) }; }
+    catch (error) { if (error instanceof AuthoringInputError) return reply.code(400).send({ error: error.message }); throw error; }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/authoring-jobs/:id/cancel", { schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } } }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    const auth = options.authService; const authoring = options.authoringService;
+    if (!auth || !authoring) return reply.code(503).send({ error: "Text authoring is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { const job = await authoring.cancel(user, request.params.id); return job ? { job } : reply.code(404).send({ error: "Authoring job not found." }); }
+    catch (error) { if (error instanceof AuthoringAccessError) return reply.code(403).send({ error: error.message }); if (error instanceof AuthoringInputError) return reply.code(400).send({ error: error.message }); throw error; }
   });
 
   app.post<{ Body: { category?: unknown; includeRunHealth?: unknown; workflowId?: unknown; workflowVersion?: unknown } }>("/api/v1/support-reports", {

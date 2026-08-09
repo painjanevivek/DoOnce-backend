@@ -17,11 +17,16 @@ import { validProtocolFixtures } from "./fixtures/protocol-v1.js";
 import { CaptureService, type CaptureStore } from "../src/capture/capture-service.js";
 import { CaptureCompilationService } from "../src/compiler/capture-compilation-service.js";
 import { CaptureWorkflowCompiler } from "../src/compiler/capture-workflow-compiler.js";
+import type { AuthoringJob, AuthoringService } from "../src/authoring/authoring-service.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
   allowedDomains: safeReportWorkflowFixture.allowedDomains,
   steps: safeReportWorkflowFixture.steps,
+};
+
+const serverAuthoringJob: AuthoringJob = {
+  id: "aa111111-1111-4111-8111-111111111111", status: "queued", request: { taskDescription: "Download the weekly report as CSV.", startingUrl: "https://example.test/reports", availableInputs: [], executorCapabilities: { schemaVersion: 1, executor: "extension", actions: ["navigate", "wait", "read", "select", "type", "download", "compare", "branch", "ask-approval", "stop"], maxSteps: 500, supportsDownloads: true }, workflowSchemaVersion: 1 }, provider: "doonce", model: "template-rules-v1", promptVersion: "text-workflow-v1.0.0", progress: { phase: "queued", message: "Waiting to start." }, attempts: 0, validationRetries: 0, usage: { promptTokens: 0, completionTokens: 0, estimatedCostMicrousd: 0 }, latencyMs: 0, createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:00.000Z",
 };
 
 class ServerAuthStore implements AuthStore {
@@ -893,4 +898,27 @@ test("operational controls block workflow mutations and remain visible in capabi
   assert.equal(capabilities.json().killSwitchActive, true);
   assert.equal(mutation.statusCode, 503);
   assert.equal(preview.statusCode, 503);
+});
+
+test("text authoring accepts work asynchronously and exposes polling and cancellation", async (t) => {
+  let current = structuredClone(serverAuthoringJob);
+  const authoringService = {
+    async enqueue() { return { created: true, job: current }; },
+    async process() { return current; },
+    async find() { return current; },
+    async events() { return []; },
+    async cancel() { current = { ...current, status: "cancelled", progress: { phase: "cancelled", message: "Authoring was cancelled." } }; return current; },
+  } as unknown as AuthoringService;
+  const app = await buildServer({ authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"), authoringService });
+  t.after(async () => app.close());
+  const signedUp = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "http://localhost:3000" }, payload: { email: "authoring@example.com", password: "correct-horse-battery-staple", tenantName: "Authoring" } });
+  const cookie = signedUp.headers["set-cookie"] ?? "";
+  const queued = await app.inject({ method: "POST", url: "/api/v1/authoring-jobs", headers: { origin: "http://localhost:3000", cookie }, payload: { taskDescription: "Download the weekly report as CSV.", startingUrl: "https://example.test/reports", idempotencyKey: "authoring:server-test" } });
+  assert.equal(queued.statusCode, 202);
+  assert.equal(queued.json().job.status, "queued");
+  const polled = await app.inject({ method: "GET", url: `/api/v1/authoring-jobs/${serverAuthoringJob.id}`, headers: { cookie } });
+  assert.equal(polled.statusCode, 200);
+  const cancelled = await app.inject({ method: "POST", url: `/api/v1/authoring-jobs/${serverAuthoringJob.id}/cancel`, headers: { origin: "http://localhost:3000", cookie } });
+  assert.equal(cancelled.statusCode, 200);
+  assert.equal(cancelled.json().job.status, "cancelled");
 });

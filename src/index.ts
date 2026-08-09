@@ -18,6 +18,9 @@ import { RunService } from "./runner/run-service.js";
 import { ArtifactService } from "./artifacts/artifact-service.js";
 import { FileSystemObjectStore } from "./artifacts/filesystem-object-store.js";
 import { PostgresArtifactMetadataStore } from "./artifacts/postgres-artifact-metadata-store.js";
+import { AuthoringService } from "./authoring/authoring-service.js";
+import { PostgresAuthoringJobStore } from "./authoring/postgres-authoring-job-store.js";
+import { TemplateAuthoringProvider } from "./authoring/template-authoring-provider.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -40,6 +43,7 @@ const runService = pool ? new RunService(new PostgresRunStore(pool)) : undefined
 const artifactStoragePath = process.env.ARTIFACT_STORAGE_PATH;
 const artifactSigningSecret = process.env.ARTIFACT_SIGNING_SECRET ?? sessionSecret;
 const artifactService = pool && artifactStoragePath && artifactSigningSecret ? new ArtifactService(new PostgresArtifactMetadataStore(pool), new FileSystemObjectStore(artifactStoragePath), artifactSigningSecret) : undefined;
+const authoringService = pool && canonicalWorkflowService && process.env.TEXT_AUTHORING_ENABLED === "true" ? new AuthoringService(new PostgresAuthoringJobStore(pool), new TemplateAuthoringProvider(), canonicalWorkflowService) : undefined;
 const app = await buildServer({
   ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
   ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
@@ -49,6 +53,7 @@ const app = await buildServer({
   ...(runReceiptStore ? { runReceiptStore } : {}),
   ...(runService ? { runService } : {}),
   ...(artifactService ? { artifactService } : {}),
+  ...(authoringService ? { authoringService } : {}),
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (pool) app.addHook("onClose", async () => pool.end());

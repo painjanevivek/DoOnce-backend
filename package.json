@@ -8,7 +8,7 @@
     "node": "24.12.x"
   },
   "scripts": {
-    "pretest": "tsx --test test/artifact-service.test.ts",
+    "pretest": "tsx --test test/artifact-service.test.ts test/authoring-service.test.ts test/postgres-authoring-job-store.test.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
