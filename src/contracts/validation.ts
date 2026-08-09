@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { WorkflowSpec } from "./protocol.js";
+import type { WorkflowCompilation, WorkflowSpec } from "./protocol.js";
 
 export const protocolContractNames = [
-  "WorkflowSpec", "LocatorSpec", "WorkflowInputDefinition", "RuntimeCapabilities", "CaptureSession", "RecordedAction", "CaptureHandshake", "CaptureSyncRequest", "CaptureSyncAck",
+  "WorkflowSpec", "LocatorSpec", "WorkflowInputDefinition", "RuntimeCapabilities", "CaptureSession", "CaptureSessionSummary", "RecordedAction", "CaptureHandshake", "CaptureSyncRequest", "CaptureSyncAck", "WorkflowCompilation",
   "RunRequest", "StepResult", "RunResult", "RepairProposal", "ExtensionMessage", "ApiError",
 ] as const;
 
@@ -28,6 +28,10 @@ export function validateProtocolContract<T>(name: ProtocolContractName, input: u
   if (!validator(input)) return { ok: false, errors: mapValidationErrors(validator.errors ?? []) };
   if (name === "WorkflowSpec") {
     const semanticErrors = validateWorkflowSemantics(input as WorkflowSpec);
+    if (semanticErrors.length > 0) return { ok: false, errors: semanticErrors };
+  }
+  if (name === "WorkflowCompilation") {
+    const semanticErrors = validateWorkflowSemantics((input as WorkflowCompilation).workflow).map((error) => ({ ...error, path: `/workflow${error.path}` }));
     if (semanticErrors.length > 0) return { ok: false, errors: semanticErrors };
   }
   return { ok: true, value: input as T };

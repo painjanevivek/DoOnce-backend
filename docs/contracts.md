@@ -18,6 +18,8 @@ All protocol objects reject unknown fields. Workflow validation also checks rule
 
 Recorded actions carry stable IDs, sequence numbers, normalized page state, semantic element evidence, and value classifications. Protected values are represented by typed placeholders rather than raw text. Element evidence stores durable locator candidates; ephemeral DOM handles are never part of the protocol.
 
+The compiler emits `WorkflowCompilation` alongside `WorkflowSpec`. It contains the compiler version, capture digest, warnings, field provenance, per-action coverage, and optional authoring suggestions. Suggestions are evidence for the editor and never silently alter the deterministic base draft.
+
 A report download is an ordinary `download` step. Its target, locator candidates, and expected outcome live in the spec; no report-specific executor behavior is permitted.
 
 ## Migrating legacy drafts

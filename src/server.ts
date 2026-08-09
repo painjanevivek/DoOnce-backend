@@ -20,6 +20,8 @@ import {
   type SensitiveFieldKind,
 } from "./execution/action-capabilities.js";
 import { CaptureConflictError, CaptureInputError, CaptureService } from "./capture/capture-service.js";
+import { CaptureCompilationNotFoundError, CaptureCompilationService } from "./compiler/capture-compilation-service.js";
+import { CaptureCompilationError } from "./compiler/capture-workflow-compiler.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -34,6 +36,7 @@ export interface ServerOptions {
   workflowService?: WorkflowService;
   canonicalWorkflowService?: CanonicalWorkflowService;
   captureService?: CaptureService;
+  captureCompilationService?: CaptureCompilationService;
   extensionOrigins?: string[];
   runReceiptStore?: LocalDemoReceiptStore;
   supportReportStore?: SupportReportStore;
@@ -190,6 +193,37 @@ export async function buildServer(options: ServerOptions = {}) {
     } catch (error) {
       if (error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.batch_invalid" });
       if (error instanceof CaptureConflictError) return reply.code(409).send({ error: error.message, code: "capture.cursor_conflict" });
+      throw error;
+    }
+  });
+
+  app.get("/api/v1/capture-sessions", async (request, reply) => {
+    const captures = options.captureService;
+    const auth = options.authService;
+    if (!captures || !auth) return reply.code(503).send({ error: "Capture sessions are not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return { sessions: await captures.listSessions(user) };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/capture-sessions/:id/compile", {
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!operationalControls.workflowChangesEnabled) return reply.code(503).send({ error: "Workflow changes are temporarily disabled." });
+    const auth = options.authService;
+    const compilations = options.captureCompilationService;
+    if (!auth || !compilations) return reply.code(503).send({ error: "Capture compilation is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try {
+      return reply.code(201).send(await compilations.compile(user, request.params.id));
+    } catch (error) {
+      if (error instanceof CaptureCompilationNotFoundError) return reply.code(404).send({ error: error.message, code: "capture.not_found" });
+      if (error instanceof CaptureCompilationError) return reply.code(409).send({ error: error.message, code: "capture.not_ready" });
+      if (error instanceof CanonicalWorkflowAccessError) return reply.code(403).send({ error: error.message, code: "workflow.access_denied" });
+      if (error instanceof CanonicalWorkflowInputError || error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.compilation_invalid" });
       throw error;
     }
   });

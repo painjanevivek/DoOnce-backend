@@ -27,3 +27,11 @@ test("returns stable paths, codes, and readable messages", () => {
     assert.match(result.errors.map((error) => error.message).join(" "), /needs run id|needs workflow id/);
   }
 });
+
+test("validates WorkflowSpec semantics inside compilation metadata", () => {
+  const fixture = structuredClone(validProtocolFixtures.WorkflowCompilation) as { workflow: { allowedDomains: string[] } };
+  fixture.workflow.allowedDomains = ["other.example.test"];
+  const result = validateProtocolContract("WorkflowCompilation", fixture);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.errors.some(({ code, path }) => code === "workflow.domain_not_allowed" && path.startsWith("/workflow/steps/")), true);
+});

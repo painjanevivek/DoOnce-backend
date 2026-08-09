@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 import type { AuthenticatedUser } from "../auth/auth-service.js";
-import type { CaptureSyncAck, CaptureSyncRequest } from "../contracts/protocol.js";
+import type { CaptureSession, CaptureSessionSummary, CaptureSyncAck, CaptureSyncRequest, RecordedAction } from "../contracts/protocol.js";
 import { withTenantTransaction } from "../database/tenant-context.js";
 import { CaptureConflictError, type CaptureStore } from "./capture-service.js";
 
@@ -21,14 +21,17 @@ export class PostgresCaptureStore implements CaptureStore {
           "INSERT INTO capture_sessions (id, tenant_id, created_by, status, approved_origins) VALUES ($1, $2, $3, 'recording', $4::text[]) ON CONFLICT (id) DO NOTHING",
           [request.sessionId, user.tenantId, user.userId, [...new Set(request.actions.map((action) => action.origin))]],
         );
-        const locked = await transaction.query<{ accepted_through: number; status: string }>(
-          "SELECT accepted_through, status FROM capture_sessions WHERE id = $1 FOR UPDATE",
+        const locked = await transaction.query<{ accepted_through: number; status: string; approved_origins: string[] }>(
+          "SELECT accepted_through, status, approved_origins FROM capture_sessions WHERE id = $1 FOR UPDATE",
           [request.sessionId],
         );
         const session = locked.rows[0];
         if (!session) throw new CaptureConflictError("Capture session is not available in this workspace.");
         if (session.status === "finalized") throw new CaptureConflictError("Capture session is already finalized.");
         if (session.accepted_through !== request.cursor) throw new CaptureConflictError(`Capture synchronization must resume after sequence ${session.accepted_through}.`);
+        if ((request.actions.at(-1)?.sequence ?? request.cursor) > 999) throw new CaptureConflictError("Capture sessions are limited to 1,000 actions.");
+        const approvedOrigins = [...new Set([...session.approved_origins, ...request.actions.map((action) => action.origin)])];
+        if (approvedOrigins.length > 20) throw new CaptureConflictError("Capture sessions are limited to 20 browser origins.");
 
         if (request.actions.length > 0) {
           await transaction.query(
@@ -40,7 +43,7 @@ export class PostgresCaptureStore implements CaptureStore {
         const status: CaptureSyncAck["status"] = request.final ? "finalized" : "accepted";
         await transaction.query(
           "UPDATE capture_sessions SET accepted_through = $2, status = $3, approved_origins = (SELECT ARRAY(SELECT DISTINCT value FROM unnest(approved_origins || $4::text[]) value)), updated_at = now(), finalized_at = CASE WHEN $3 = 'finalized' THEN now() ELSE finalized_at END WHERE id = $1",
-          [request.sessionId, acceptedThrough, request.final ? "finalized" : "recording", [...new Set(request.actions.map((action) => action.origin))]],
+          [request.sessionId, acceptedThrough, request.final ? "finalized" : "recording", approvedOrigins],
         );
         await transaction.query(
           "INSERT INTO capture_batches (tenant_id, session_id, batch_id, cursor, accepted_through, status) VALUES ($1, $2, $3, $4, $5, $6)",
@@ -51,6 +54,58 @@ export class PostgresCaptureStore implements CaptureStore {
     } finally {
       client.release();
     }
+  }
+
+  public async findSession(user: AuthenticatedUser, sessionId: string): Promise<CaptureSession | undefined> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const sessionResult = await transaction.query<{
+          id: string; status: CaptureSession["status"]; approved_origins: string[]; accepted_through: number;
+          created_at: Date | string; updated_at: Date | string; finalized_at: Date | string | null;
+        }>("SELECT id, status, approved_origins, accepted_through, created_at, updated_at, finalized_at FROM capture_sessions WHERE id = $1", [sessionId]);
+        const row = sessionResult.rows[0];
+        if (!row) return undefined;
+        const actionResult = await transaction.query<{ action: RecordedAction }>("SELECT action FROM capture_actions WHERE session_id = $1 ORDER BY sequence", [sessionId]);
+        return {
+          schemaVersion: 1,
+          format: "doonce.capture-session.v1",
+          id: row.id,
+          startedAt: asIso(row.created_at),
+          ...(row.finalized_at ? { endedAt: asIso(row.finalized_at) } : {}),
+          status: row.status,
+          approvedOrigins: row.approved_origins,
+          actions: actionResult.rows.map(({ action }) => action),
+          updatedAt: asIso(row.updated_at),
+          syncCursor: row.accepted_through,
+        };
+      });
+    } finally { client.release(); }
+  }
+
+  public async listSessions(user: AuthenticatedUser, limit: number): Promise<CaptureSessionSummary[]> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const result = await transaction.query<{
+          id: string; status: CaptureSessionSummary["status"]; created_at: Date | string; finalized_at: Date | string | null;
+          action_count: number | string; workflow_id: string | null; compiler_version: string | null;
+        }>(
+          "SELECT sessions.id, sessions.status, sessions.created_at, sessions.finalized_at, count(actions.id)::integer AS action_count, compiled.workflow_id, compiled.compiler_version FROM capture_sessions sessions LEFT JOIN capture_actions actions ON actions.session_id = sessions.id LEFT JOIN LATERAL (SELECT versions.workflow_id, versions.compiler_version FROM workflow_versions versions WHERE versions.source_capture_session_id = sessions.id AND versions.status = 'draft' ORDER BY versions.created_at DESC LIMIT 1) compiled ON true GROUP BY sessions.id, compiled.workflow_id, compiled.compiler_version ORDER BY sessions.updated_at DESC LIMIT $1",
+          [limit],
+        );
+        return result.rows.map((row) => ({
+          schemaVersion: 1,
+          id: row.id,
+          status: row.status,
+          startedAt: asIso(row.created_at),
+          ...(row.finalized_at ? { endedAt: asIso(row.finalized_at) } : {}),
+          actionCount: Number(row.action_count),
+          ...(row.workflow_id ? { workflowId: row.workflow_id } : {}),
+          ...(row.compiler_version ? { compilerVersion: row.compiler_version } : {}),
+        }));
+      });
+    } finally { client.release(); }
   }
 
   public async createPairingCode(user: AuthenticatedUser, codeHash: string, expiresAt: string): Promise<void> {
@@ -102,3 +157,5 @@ export class PostgresCaptureStore implements CaptureStore {
 function ack(request: CaptureSyncRequest, acceptedThrough: number, status: CaptureSyncAck["status"]): CaptureSyncAck {
   return { schemaVersion: 1, sessionId: request.sessionId, batchId: request.batchId, acceptedThrough, status };
 }
+
+function asIso(value: Date | string): string { return value instanceof Date ? value.toISOString() : new Date(value).toISOString(); }

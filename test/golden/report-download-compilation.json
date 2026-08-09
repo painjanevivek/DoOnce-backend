@@ -1,0 +1,34 @@
+{
+  "compilerVersion": "1.0.0",
+  "digestLength": 64,
+  "title": "Automate Reports",
+  "domains": ["reports.example.test"],
+  "inputs": [
+    {
+      "name": "report_date",
+      "label": "Report date",
+      "kind": "date",
+      "required": true
+    }
+  ],
+  "steps": [
+    {
+      "action": "navigate",
+      "name": "Open /reports",
+      "expectedOutcome": "The browser reaches /reports."
+    },
+    {
+      "action": "type",
+      "name": "Enter Report date",
+      "expectedOutcome": "Report date accepts the provided input."
+    },
+    {
+      "action": "download",
+      "name": "Download from Download report",
+      "expectedOutcome": "The browser confirms that the expected download completes."
+    }
+  ],
+  "warningCodes": ["compiler.variable-input-suggested"],
+  "coverage": ["emitted", "emitted", "emitted", "combined", "combined"],
+  "provenanceSources": ["deterministically-inferred", "observed"]
+}

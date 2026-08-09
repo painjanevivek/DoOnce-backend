@@ -79,10 +79,38 @@ export interface CaptureSession {
   retryCount?: number;
 }
 
+export interface CaptureSessionSummary {
+  schemaVersion: SchemaVersion;
+  id: string;
+  status: "recording" | "finalized" | "discarded";
+  startedAt: string;
+  endedAt?: string;
+  actionCount: number;
+  workflowId?: string;
+  compilerVersion?: string;
+}
+
 export type CaptureCapability = "semantic-elements" | "frames" | "shadow-dom" | "navigation" | "downloads" | "tabs" | "offline-buffer";
 export interface CaptureHandshake { schemaVersion: SchemaVersion; extensionVersion: string; capabilities: CaptureCapability[]; maxBatchSize: number }
 export interface CaptureSyncRequest { schemaVersion: SchemaVersion; sessionId: string; batchId: string; cursor: number; actions: RecordedAction[]; final: boolean }
 export interface CaptureSyncAck { schemaVersion: SchemaVersion; sessionId: string; batchId: string; acceptedThrough: number; status: "accepted" | "duplicate" | "finalized"; retryAfterMs?: number }
+
+export interface CompilerWarning { code: string; severity: "warning" | "error"; message: string; actionIds: string[] }
+export interface FieldProvenance { path: string; source: "observed" | "deterministically-inferred" | "ai-suggested" | "manually-edited"; confidence: number; actionIds: string[] }
+export interface ActionCoverage { actionId: string; outcome: "emitted" | "combined" | "unsupported"; stepIds: string[]; reason?: string }
+export interface AuthoringSuggestion { path: string; value: string; confidence: number; reason: string; actionIds: string[] }
+export interface WorkflowCompilation {
+  schemaVersion: SchemaVersion;
+  format: "doonce.workflow-compilation.v1";
+  compilerVersion: string;
+  captureSessionId: string;
+  sourceDigest: string;
+  workflow: WorkflowSpec;
+  warnings: CompilerWarning[];
+  provenance: FieldProvenance[];
+  coverage: ActionCoverage[];
+  suggestions: AuthoringSuggestion[];
+}
 
 export interface RunRequest {
   schemaVersion: SchemaVersion;

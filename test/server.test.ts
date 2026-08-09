@@ -8,14 +8,15 @@ import type { SessionIdentity } from "../src/auth/session-token.js";
 import type { WorkflowDraft } from "../src/workflow/schema.js";
 import type { PublishedWorkflowVersion } from "../src/workflow/versioning.js";
 import { WorkflowService, type WorkflowAuditEvent, type WorkflowStore } from "../src/workflow/workflow-service.js";
-import { CanonicalWorkflowService, type CanonicalWorkflowDraft, type CanonicalWorkflowStore } from "../src/workflow/canonical-workflow-service.js";
-import type { WorkflowSpec } from "../src/contracts/protocol.js";
+import { CanonicalWorkflowService, type CanonicalWorkflowDraft, type CanonicalWorkflowDraftMetadata, type CanonicalWorkflowStore } from "../src/workflow/canonical-workflow-service.js";
+import type { CaptureSyncAck, CaptureSyncRequest, WorkflowSpec } from "../src/contracts/protocol.js";
 import type { OperationalControls } from "../src/system/operational-controls.js";
 import type { SubmittedSupportReport, SupportDiagnostic, SupportReportCategory, SupportReportStore } from "../src/support/postgres-support-report-store.js";
 import { safeReportWorkflowFixture } from "./fixtures/safe-report-workflow.js";
 import { validProtocolFixtures } from "./fixtures/protocol-v1.js";
 import { CaptureService, type CaptureStore } from "../src/capture/capture-service.js";
-import type { CaptureSyncAck, CaptureSyncRequest } from "../src/contracts/protocol.js";
+import { CaptureCompilationService } from "../src/compiler/capture-compilation-service.js";
+import { CaptureWorkflowCompiler } from "../src/compiler/capture-workflow-compiler.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
@@ -93,8 +94,8 @@ class ServerWorkflowStore implements WorkflowStore {
 class ServerCanonicalWorkflowStore implements CanonicalWorkflowStore {
   private readonly drafts = new Map<string, CanonicalWorkflowDraft>();
 
-  public async createDraft(_user: AuthenticatedUser, workflowId: string, spec: WorkflowSpec): Promise<CanonicalWorkflowDraft> {
-    const draft = { id: workflowId, version: 1, status: "draft" as const, spec, checksum: "fixture-checksum" };
+  public async createDraft(_user: AuthenticatedUser, workflowId: string, spec: WorkflowSpec, metadata?: CanonicalWorkflowDraftMetadata): Promise<CanonicalWorkflowDraft> {
+    const draft = { id: workflowId, version: 1, status: "draft" as const, spec, checksum: "fixture-checksum", ...(metadata ? { metadata } : {}) };
     this.drafts.set(workflowId, draft);
     return draft;
   }
@@ -112,6 +113,8 @@ class ServerCaptureStore implements CaptureStore {
     this.batches.push(request);
     return { schemaVersion: 1, sessionId: request.sessionId, batchId: request.batchId, acceptedThrough: request.actions.at(-1)?.sequence ?? request.cursor, status: request.final ? "finalized" : "accepted" };
   }
+  public async findSession(): Promise<import("../src/contracts/protocol.js").CaptureSession | undefined> { return validProtocolFixtures.CaptureSession as import("../src/contracts/protocol.js").CaptureSession; }
+  public async listSessions(): Promise<import("../src/contracts/protocol.js").CaptureSessionSummary[]> { return [validProtocolFixtures.CaptureSessionSummary as import("../src/contracts/protocol.js").CaptureSessionSummary]; }
   public async createPairingCode(_user: AuthenticatedUser, codeHash: string): Promise<void> { this.codeHash = codeHash; }
   public async exchangePairingCode(codeHash: string, tokenHash: string): Promise<AuthenticatedUser | undefined> {
     if (codeHash !== this.codeHash) return undefined;
@@ -269,9 +272,13 @@ test("creates and reloads one validated canonical WorkflowSpec through the API",
 
 test("negotiates and synchronizes an authenticated capture batch", async (t) => {
   const captureStore = new ServerCaptureStore();
+  const captureService = new CaptureService(captureStore);
+  const canonicalWorkflowService = new CanonicalWorkflowService(new ServerCanonicalWorkflowStore());
   const app = await buildServer({
     authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes"),
-    captureService: new CaptureService(captureStore),
+    captureService,
+    canonicalWorkflowService,
+    captureCompilationService: new CaptureCompilationService(captureService, new CaptureWorkflowCompiler(), canonicalWorkflowService),
   });
   t.after(async () => app.close());
   const handshake = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/handshake", payload: validProtocolFixtures.CaptureHandshake });
@@ -289,6 +296,16 @@ test("negotiates and synchronizes an authenticated capture batch", async (t) => 
   assert.equal(sync.statusCode, 200);
   assert.equal(sync.json().acceptedThrough, 0);
   assert.equal(captureStore.batches.length, 1);
+
+  const listed = await app.inject({ method: "GET", url: "/api/v1/capture-sessions", headers: { cookie } });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().sessions[0].id, request.sessionId);
+
+  const compiled = await app.inject({ method: "POST", url: `/api/v1/capture-sessions/${request.sessionId}/compile`, headers: { origin: "http://localhost:3000", cookie } });
+  assert.equal(compiled.statusCode, 201);
+  assert.equal(compiled.json().compilation.compilerVersion, "1.0.0");
+  assert.equal(compiled.json().workflow.metadata.captureSessionId, request.sessionId);
+  assert.equal(compiled.json().workflow.spec.format, "doonce.workflow-spec.v1");
 
   const unpaired = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/unpair", headers: { origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", authorization: `Bearer ${paired.json().token}` } });
   assert.equal(unpaired.statusCode, 200);

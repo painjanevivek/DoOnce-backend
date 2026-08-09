@@ -43,6 +43,8 @@ function memoryStore(options?: { identities?: Map<string, AuthenticatedUser>; on
     async syncBatch(_user, request): Promise<CaptureSyncAck> {
       return { schemaVersion: 1, sessionId: request.sessionId, batchId: request.batchId, acceptedThrough: request.actions.at(-1)?.sequence ?? request.cursor, status: request.final ? "finalized" : "accepted" };
     },
+    async findSession() { return validProtocolFixtures.CaptureSession as import("../src/contracts/protocol.js").CaptureSession; },
+    async listSessions() { return [validProtocolFixtures.CaptureSessionSummary as import("../src/contracts/protocol.js").CaptureSessionSummary]; },
     async createPairingCode(_user, value) { codeHash = value; options?.onPairingHash?.(value); },
     async exchangePairingCode(value, tokenHash) { if (value !== codeHash) return undefined; options?.identities?.set(tokenHash, user); return user; },
     async findExtensionIdentity(tokenHash) { return options?.identities?.get(tokenHash); },

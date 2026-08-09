@@ -1,10 +1,12 @@
 import type { AuthenticatedUser } from "../auth/auth-service.js";
-import type { CaptureHandshake, CaptureSyncAck, CaptureSyncRequest } from "../contracts/protocol.js";
+import type { CaptureHandshake, CaptureSession, CaptureSessionSummary, CaptureSyncAck, CaptureSyncRequest } from "../contracts/protocol.js";
 import { formatValidationIssues, validateProtocolContract } from "../contracts/validation.js";
 import { createHash, randomBytes } from "node:crypto";
 
 export interface CaptureStore {
   syncBatch(user: AuthenticatedUser, request: CaptureSyncRequest): Promise<CaptureSyncAck>;
+  findSession(user: AuthenticatedUser, sessionId: string): Promise<CaptureSession | undefined>;
+  listSessions(user: AuthenticatedUser, limit: number): Promise<CaptureSessionSummary[]>;
   createPairingCode(user: AuthenticatedUser, codeHash: string, expiresAt: string): Promise<void>;
   exchangePairingCode(codeHash: string, tokenHash: string): Promise<AuthenticatedUser | undefined>;
   findExtensionIdentity(tokenHash: string): Promise<AuthenticatedUser | undefined>;
@@ -38,6 +40,16 @@ export class CaptureService {
     const origins = new Set(result.value.actions.map((action) => action.origin));
     if (origins.size > 20) throw new CaptureInputError("A capture batch contains too many browser origins.");
     return this.store.syncBatch(user, result.value);
+  }
+
+  public async findSession(user: AuthenticatedUser, sessionId: string): Promise<CaptureSession | undefined> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) throw new CaptureInputError("Capture session ID is invalid.");
+    return this.store.findSession(user, sessionId);
+  }
+
+  public async listSessions(user: AuthenticatedUser, limit = 20): Promise<CaptureSessionSummary[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new CaptureInputError("Capture session list limit must be between 1 and 100.");
+    return this.store.listSessions(user, limit);
   }
 
   public async createPairingCode(user: AuthenticatedUser, now = new Date()): Promise<{ code: string; expiresAt: string }> {
