@@ -102,8 +102,8 @@ test("publishes under a workflow lock and archives the previous active version",
   const store = new PostgresCanonicalWorkflowStore(poolWithQuery(async (sql) => {
     queries.push(sql);
     if (sql.startsWith("SELECT version, definition, definition_checksum")) return { rows: [{ version: 2, definition: spec, definition_checksum: "e".repeat(64) }] };
-    if (sql.startsWith("UPDATE workflow_versions SET status = 'active'")) return { rows: [{ workflow_id: workflowId, version: 2, status: "active", definition: spec, definition_checksum: "e".repeat(64), created_at: "2026-08-09T00:00:00.000Z", published_at: "2026-08-09T00:01:00.000Z" }] };
-    if (sql.startsWith("SELECT run_id FROM workflow_test_evidence")) return { rows: [{ run_id: evidenceRunId }] };
+    if (sql.startsWith("UPDATE workflow_versions versions SET status = 'active'")) return { rows: [{ workflow_id: workflowId, version: 2, status: "active", definition: spec, definition_checksum: "e".repeat(64), created_at: "2026-08-09T00:00:00.000Z", published_at: "2026-08-09T00:01:00.000Z" }] };
+    if (sql.startsWith("SELECT evidence.run_id FROM workflow_test_evidence")) return { rows: [{ run_id: evidenceRunId }] };
     return { rows: [] };
   }));
   const result = await store.publishDraft(user, workflowId, "e".repeat(64));
@@ -111,6 +111,7 @@ test("publishes under a workflow lock and archives the previous active version",
   if (result.status === "published") assert.equal(result.version.testEvidenceRunId, evidenceRunId);
   assert.ok(queries.some((sql) => sql.includes("FOR UPDATE")));
   assert.ok(queries.some((sql) => sql.includes("status = 'archived'")));
+  assert.ok(queries.some((sql) => sql.includes("JOIN executor_leases test_lease") && sql.includes("test_run.result->>'status' = 'completed'")));
 });
 
 function poolWithQuery(query: (sql: string, values?: unknown[]) => Promise<{ rows: unknown[] }>): Pool {

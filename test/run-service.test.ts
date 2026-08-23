@@ -88,10 +88,23 @@ test("claims, heartbeats, checkpoints, and completes with an opaque lease", asyn
   const checkpointed = await service.checkpoint(user, created.run.id, { leaseToken: claimed!.leaseToken, checkpoint: { currentStepIndex: 1, stepResults: [], variables: { region: "north" }, observedUrl: "https://example.test/reports" } });
   assert.equal(checkpointed?.currentStepIndex, 1);
   const finishedAt = new Date().toISOString();
-  const result: RunResult = { schemaVersion: 1, format: "doonce.run-result.v1", runId: created.run.id, workflowId, workflowVersion: 2, status: "completed", stepResults: [], startedAt: claimed!.run.startedAt!, finishedAt };
+  const result: RunResult = { schemaVersion: 1, format: "doonce.run-result.v1", runId: created.run.id, workflowId, workflowVersion: 2, status: "completed", stepResults: [{ schemaVersion: 1, stepId, status: "verified", startedAt: claimed!.run.startedAt!, finishedAt }], startedAt: claimed!.run.startedAt!, finishedAt };
   const finished = await service.finish(user, created.run.id, { leaseToken: claimed!.leaseToken, result });
   assert.equal(finished?.status, "completed");
   assert.equal((await service.finish(user, created.run.id, { leaseToken: claimed!.leaseToken, result }))?.status, "completed");
+});
+
+test("rejects a completed result with missing, failed, or unconfirmed evidence", async () => {
+  const store = new MemoryRunStore();
+  const service = new RunService(store);
+  const created = await service.create(user, { workflowId, inputs: { region: "north" }, mode: "test", idempotencyKey: "draft:test-invalid" });
+  const claimed = await service.claim(user, { extensionVersion: "0.4.0", capabilities: ["workflow-spec-v1"] });
+  const startedAt = claimed!.run.startedAt!;
+  const finishedAt = new Date().toISOString();
+  const invalid: RunResult = { schemaVersion: 1, format: "doonce.run-result.v1", runId: created.run.id, workflowId, workflowVersion: 2, status: "completed", stepResults: [{ schemaVersion: 1, stepId, status: "verified", startedAt, finishedAt, assertionResults: [{ schemaVersion: 1, assertionId: "55555555-5555-4555-8555-555555555555", status: "confirmation-required", verifiedAt: finishedAt }] }], startedAt, finishedAt };
+
+  await assert.rejects(() => service.finish(user, created.run.id, { leaseToken: claimed!.leaseToken, result: invalid }), /verified steps and assertions/);
+  assert.equal(store.run?.status, "running");
 });
 
 test("cancellation is idempotent and visible to the extension", async () => {

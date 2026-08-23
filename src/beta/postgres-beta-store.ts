@@ -43,7 +43,24 @@ export class PostgresBetaStore implements BetaStore {
   public async enroll(user: AuthenticatedUser, input: Parameters<BetaStore["enroll"]>[1]): Promise<BetaWorkflowEnrollment | undefined> {
     const inserted = await this.withUser(user, async (db) => (await db.query<{ id: string }>(
       `INSERT INTO beta_workflow_enrollments (id, tenant_id, workflow_id, created_by, task_category, baseline_duration_seconds, baseline_error_rate_percent)
-       SELECT $1, $2, workflow.id, $3, $4, $5, $6 FROM workflows workflow WHERE workflow.id = $7
+       SELECT $1, $2, workflow.id, $3, $4, $5, $6
+       FROM workflows workflow
+       JOIN workflow_versions active_version ON active_version.workflow_id = workflow.id AND active_version.status = 'active'
+       WHERE workflow.id = $7
+         AND jsonb_array_length(active_version.definition->'allowedDomains') = 1
+         AND (
+           ($4 = 'report-download'
+             AND (SELECT count(*) FROM jsonb_array_elements(active_version.definition->'steps') step WHERE step->>'action' = 'download') = 1
+             AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(active_version.definition->'steps') step WHERE step->>'action' NOT IN ('navigate', 'wait', 'read', 'compare', 'branch', 'stop', 'download')))
+           OR
+           ($4 = 'table-extraction'
+             AND EXISTS (SELECT 1 FROM jsonb_array_elements(active_version.definition->'steps') step WHERE step->>'action' = 'read')
+             AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(active_version.definition->'steps') step WHERE step->>'action' NOT IN ('navigate', 'wait', 'read', 'compare', 'branch', 'stop')))
+         )
+         AND (
+           jsonb_array_length(COALESCE(active_version.definition->'successCriteria', '[]'::jsonb)) > 0
+           OR EXISTS (SELECT 1 FROM jsonb_array_elements(active_version.definition->'steps') step WHERE step->>'action' = 'compare' OR jsonb_array_length(COALESCE(step->'assertions', '[]'::jsonb)) > 0)
+         )
        ON CONFLICT (tenant_id, workflow_id) DO NOTHING RETURNING id`,
       [input.id, user.tenantId, user.userId, input.taskCategory, input.baselineDurationSeconds, input.baselineErrorRatePercent, input.workflowId],
     )).rows[0]?.id);

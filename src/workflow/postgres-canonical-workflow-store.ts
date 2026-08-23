@@ -75,7 +75,26 @@ export class PostgresCanonicalWorkflowStore implements CanonicalWorkflowStore {
     try {
       return await withTenantTransaction(client, user, async (transaction) => {
         const result = await transaction.query<VersionRow>(
-          "SELECT versions.workflow_id, versions.version, versions.status, versions.definition, versions.definition_checksum, versions.created_at, versions.published_at, evidence.run_id AS test_evidence_run_id FROM workflow_versions versions LEFT JOIN LATERAL (SELECT run_id FROM workflow_test_evidence WHERE workflow_id = versions.workflow_id AND workflow_version = versions.version AND workflow_checksum = versions.definition_checksum ORDER BY verified_at DESC LIMIT 1) evidence ON true WHERE versions.workflow_id = $1 AND versions.schema_version = 1 ORDER BY versions.version DESC LIMIT 100",
+          `SELECT versions.workflow_id, versions.version, versions.status, versions.definition, versions.definition_checksum, versions.created_at, versions.published_at, evidence.run_id AS test_evidence_run_id
+           FROM workflow_versions versions
+           LEFT JOIN LATERAL (
+             SELECT test_evidence.run_id
+             FROM workflow_test_evidence test_evidence
+             JOIN workflow_runs test_run ON test_run.id = test_evidence.run_id
+             JOIN executor_leases test_lease ON test_lease.run_id = test_run.id
+             WHERE test_evidence.workflow_id = versions.workflow_id
+               AND test_evidence.workflow_version = versions.version
+               AND test_evidence.workflow_checksum = versions.definition_checksum
+               AND test_run.workflow_id = test_evidence.workflow_id
+               AND test_run.workflow_version = test_evidence.workflow_version
+               AND test_run.workflow_checksum = test_evidence.workflow_checksum
+               AND test_run.mode = 'test' AND test_run.status = 'completed'
+               AND test_run.result->>'status' = 'completed'
+               AND test_lease.released_at IS NOT NULL
+             ORDER BY test_evidence.verified_at DESC LIMIT 1
+           ) evidence ON true
+           WHERE versions.workflow_id = $1 AND versions.schema_version = 1
+           ORDER BY versions.version DESC LIMIT 100`,
           [workflowId],
         );
         return result.rows.map(mapVersion);
@@ -126,7 +145,21 @@ export class PostgresCanonicalWorkflowStore implements CanonicalWorkflowStore {
 
   public async hasPassingTestEvidence(user: AuthenticatedUser, workflowId: string, version: number, checksum: string): Promise<boolean> {
     const client = await this.pool.connect();
-    try { return await withTenantTransaction(client, user, async (transaction) => Boolean((await transaction.query("SELECT 1 FROM workflow_test_evidence WHERE workflow_id = $1 AND workflow_version = $2 AND workflow_checksum = $3 LIMIT 1", [workflowId, version, checksum])).rows[0])); }
+    try { return await withTenantTransaction(client, user, async (transaction) => Boolean((await transaction.query(
+      `SELECT 1
+       FROM workflow_test_evidence evidence
+       JOIN workflow_runs test_run ON test_run.id = evidence.run_id
+       JOIN executor_leases test_lease ON test_lease.run_id = test_run.id
+       WHERE evidence.workflow_id = $1 AND evidence.workflow_version = $2 AND evidence.workflow_checksum = $3
+         AND test_run.workflow_id = evidence.workflow_id
+         AND test_run.workflow_version = evidence.workflow_version
+         AND test_run.workflow_checksum = evidence.workflow_checksum
+         AND test_run.mode = 'test' AND test_run.status = 'completed'
+         AND test_run.result->>'status' = 'completed'
+         AND test_lease.released_at IS NOT NULL
+       LIMIT 1`,
+      [workflowId, version, checksum],
+    )).rows[0])); }
     finally { client.release(); }
   }
 
@@ -139,12 +172,35 @@ export class PostgresCanonicalWorkflowStore implements CanonicalWorkflowStore {
         if (!current) return { status: "missing" };
         if (current.checksum !== expectedChecksum) return { status: "conflict", draft: current };
         await transaction.query("UPDATE workflow_versions SET status = 'archived' WHERE workflow_id = $1 AND status = 'active'", [workflowId]);
-        const published = await transaction.query<VersionRow>("UPDATE workflow_versions SET status = 'active', published_at = now() WHERE workflow_id = $1 AND version = $2 AND status = 'draft' AND definition_checksum = $3 RETURNING workflow_id, version, status, definition, definition_checksum, created_at, published_at", [workflowId, current.version, expectedChecksum]);
+        const published = await transaction.query<VersionRow>(`UPDATE workflow_versions versions SET status = 'active', published_at = now()
+          WHERE versions.workflow_id = $1 AND versions.version = $2 AND versions.status = 'draft' AND versions.definition_checksum = $3
+            AND EXISTS (
+              SELECT 1 FROM workflow_test_evidence evidence
+              JOIN workflow_runs test_run ON test_run.id = evidence.run_id
+              JOIN executor_leases test_lease ON test_lease.run_id = test_run.id
+              WHERE evidence.workflow_id = versions.workflow_id
+                AND evidence.workflow_version = versions.version
+                AND evidence.workflow_checksum = versions.definition_checksum
+                AND test_run.workflow_id = evidence.workflow_id
+                AND test_run.workflow_version = evidence.workflow_version
+                AND test_run.workflow_checksum = evidence.workflow_checksum
+                AND test_run.mode = 'test' AND test_run.status = 'completed'
+                AND test_run.result->>'status' = 'completed'
+                AND test_lease.released_at IS NOT NULL
+            )
+          RETURNING versions.workflow_id, versions.version, versions.status, versions.definition, versions.definition_checksum, versions.created_at, versions.published_at`, [workflowId, current.version, expectedChecksum]);
         const version = published.rows[0];
         if (!version) return { status: "conflict", draft: current };
         await transaction.query("UPDATE workflows SET active_version = $1, title = $2, updated_at = now() WHERE id = $3", [current.version, current.spec.title, workflowId]);
         await transaction.query("INSERT INTO workflow_audit_events (tenant_id, workflow_id, workflow_version, actor_id, event_type, metadata) VALUES ($1, $2, $3, $4, 'workflow.published', $5::jsonb)", [user.tenantId, workflowId, current.version, user.userId, JSON.stringify({ checksum: expectedChecksum, schemaVersion: 1 })]);
-        const evidence = await transaction.query<{ run_id: string }>("SELECT run_id FROM workflow_test_evidence WHERE workflow_id = $1 AND workflow_version = $2 AND workflow_checksum = $3 ORDER BY verified_at DESC LIMIT 1", [workflowId, current.version, expectedChecksum]);
+        const evidence = await transaction.query<{ run_id: string }>(`SELECT evidence.run_id FROM workflow_test_evidence evidence
+          JOIN workflow_runs test_run ON test_run.id = evidence.run_id
+          JOIN executor_leases test_lease ON test_lease.run_id = test_run.id
+          WHERE evidence.workflow_id = $1 AND evidence.workflow_version = $2 AND evidence.workflow_checksum = $3
+            AND test_run.workflow_id = evidence.workflow_id AND test_run.workflow_version = evidence.workflow_version
+            AND test_run.workflow_checksum = evidence.workflow_checksum AND test_run.mode = 'test' AND test_run.status = 'completed'
+            AND test_run.result->>'status' = 'completed' AND test_lease.released_at IS NOT NULL
+          ORDER BY evidence.verified_at DESC LIMIT 1`, [workflowId, current.version, expectedChecksum]);
         return { status: "published", version: mapVersion({ ...version, test_evidence_run_id: evidence.rows[0]?.run_id ?? null }) };
       });
     } finally { client.release(); }

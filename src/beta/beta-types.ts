@@ -52,18 +52,23 @@ export interface BetaSummary {
   topFailureCategories: Array<{ category: BetaFailureCategory; count: number }>;
 }
 
+export const attendedWedgeCategories = ["report-download", "table-extraction"] as const satisfies readonly BetaTaskCategory[];
+
 export const betaCompatibilityMatrix = {
-  reviewedAt: "2026-08-09",
+  reviewedAt: "2026-08-24",
   runtimes: [
-    { runtime: "Chrome extension", channel: "Chrome Stable", execution: "manual", status: "supported" },
-    { runtime: "Hosted Chromium", channel: "Playwright-pinned Chromium", execution: "manual and scheduled", status: "supported" },
+    { runtime: "Chrome extension", channel: "Chrome Stable", execution: "attended beta", status: "qualified" },
+    { runtime: "Hosted Chromium", channel: "Playwright-pinned Chromium", execution: "disabled pending pattern qualification", status: "not-qualified" },
     { runtime: "Firefox and Safari", channel: "not qualified", execution: "none", status: "not-supported" },
   ],
-  workflowCategories: betaTaskCategories.map((category) => ({ category, status: "beta" as const })),
+  workflowCategories: betaTaskCategories.map((category) => ({
+    category,
+    status: attendedWedgeCategories.includes(category as (typeof attendedWedgeCategories)[number]) ? "attended-beta" as const : "proposed" as const,
+  })),
   constraints: [
     "HTTPS target sites, plus explicit local demonstration origins, are supported.",
     "Workflows must use semantic locators and explicit outcome verification.",
-    "Scheduled runs require a compatible managed browser session.",
+    "Hosted and scheduled runs remain disabled until the exact pattern and managed session are qualified.",
     "CAPTCHA, broad autonomous browsing, desktop applications, and destructive or financial actions are not supported.",
   ],
 } as const;

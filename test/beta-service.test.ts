@@ -72,6 +72,9 @@ test("enrolls only a supported measurable workflow and exposes the bounded compa
 
   assert.equal(workflow.baselineDurationSeconds, 750);
   assert.equal(service.compatibility().workflowCategories.length, 6);
+  assert.equal(service.compatibility().workflowCategories.find(({ category }) => category === "report-download")?.status, "attended-beta");
+  assert.equal(service.compatibility().workflowCategories.find(({ category }) => category === "structured-form-entry")?.status, "proposed");
+  assert.equal(service.compatibility().runtimes.find(({ runtime }) => runtime === "Hosted Chromium")?.status, "not-qualified");
   assert.equal(service.compatibility().runtimes.some((runtime) => runtime.runtime === "Firefox and Safari" && runtime.status === "not-supported"), true);
   await assert.rejects(() => service.enroll(owner, {
     workflowId: workflow.workflowId,
@@ -86,7 +89,7 @@ test("records evidence without accepting unbounded notes or invented failure cat
   const service = new BetaService(store);
   const workflow = await service.enroll(owner, {
     workflowId: "33333333-3333-4333-8333-333333333333",
-    taskCategory: "filter-export",
+    taskCategory: "table-extraction",
     baselineDurationMinutes: 5,
     baselineErrorRatePercent: 0,
   });
@@ -100,6 +103,12 @@ test("records evidence without accepting unbounded notes or invented failure cat
   assert.deepEqual(store.observations, [{ runId: "44444444-4444-4444-8444-444444444444", developerIntervened: false }]);
   assert.deepEqual(store.failures, ["locator-problem"]);
   await assert.rejects(() => service.recordFailure(owner, workflow.id, { category: "miscellaneous" }), BetaInputError);
+  await assert.rejects(() => service.enroll(owner, {
+    workflowId: "55555555-5555-4555-8555-555555555555",
+    taskCategory: "structured-form-entry",
+    baselineDurationMinutes: 5,
+    baselineErrorRatePercent: 0,
+  }), /not enabled/);
 });
 
 test("restricts beta coordination to owners and builders", () => {

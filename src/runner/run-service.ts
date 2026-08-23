@@ -155,6 +155,9 @@ export class RunService {
     const leaseToken = requireLeaseToken(input.leaseToken);
     const validation = validateProtocolContract<RunResult>("RunResult", input.result);
     if (!validation.ok || validation.value.runId !== runId) throw new RunInputError("The run result is invalid or belongs to another run.");
+    if (validation.value.status === "completed" && !isVerifiedCompletion(validation.value)) {
+      throw new RunInputError("A completed run requires verified steps and assertions.");
+    }
     const existing = await this.store.find(user, requireUuid(runId));
     if (!existing || validation.value.workflowId !== existing.workflowId || validation.value.workflowVersion !== existing.workflowVersion) throw new RunInputError("The run result does not match its leased workflow version.");
     if (existing.result) {
@@ -232,6 +235,14 @@ function parseCheckpointInput(value: unknown): { leaseToken: string; checkpoint:
 }
 
 function requireRunRole(role: MembershipRole): void { if (role === "reviewer") throw new RunAccessError("This role cannot start or cancel runs."); }
+function isVerifiedCompletion(result: RunResult): boolean {
+  if (result.stepResults.length === 0 || result.stepResults.some((step) => step.status !== "verified")) return false;
+  const assertions = [
+    ...(result.assertionResults ?? []),
+    ...result.stepResults.flatMap((step) => step.assertionResults ?? []),
+  ];
+  return assertions.every((assertion) => assertion.status === "verified");
+}
 function requireUuid(value: unknown): string { if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new RunInputError("A valid identifier is required."); return value; }
 function requireLeaseToken(value: unknown): string { if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{40,64}$/.test(value)) throw new RunInputError("The run lease token is invalid."); return value; }
 function hashLease(token: string): string { return createHash("sha256").update(token).digest("hex"); }

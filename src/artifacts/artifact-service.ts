@@ -80,6 +80,9 @@ function parseArtifactInput(value: unknown, maxBytes: number): { fileName: strin
   if (typeof value.fileName !== "string" || !/^[^\\/:*?"<>|\r\n]{1,240}$/.test(value.fileName)) throw new ArtifactInputError("Artifact file name is invalid.");
   if (typeof value.contentType !== "string" || !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i.test(value.contentType) || value.contentType.length > 120) throw new ArtifactInputError("Artifact content type is invalid.");
   if (!isRetention(value.retentionClass) || typeof value.base64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.base64)) throw new ArtifactInputError("Artifact content is invalid.");
+  if ((value.retentionClass === "workflow-output" || value.retentionClass === "publication-evidence") && value.stepId === undefined) {
+    throw new ArtifactInputError("Verified workflow artifacts require the initiating download step.");
+  }
   const bytes = Buffer.from(value.base64, "base64");
   if (bytes.byteLength === 0 || bytes.byteLength > maxBytes || bytes.toString("base64").replace(/=+$/, "") !== value.base64.replace(/=+$/, "")) throw new ArtifactInputError(`Artifact content must be between 1 and ${maxBytes} bytes.`);
   if (typeof value.leaseToken !== "string" || !/^[A-Za-z0-9_-]{40,64}$/.test(value.leaseToken)) throw new ArtifactInputError("Artifact upload requires the active run lease.");

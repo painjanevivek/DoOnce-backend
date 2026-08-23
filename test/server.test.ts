@@ -784,7 +784,8 @@ test("sign-in is rate limited after five requests from one client", async (t) =>
 });
 
 test("creates and publishes a policy-safe workflow for the authenticated tenant", async (t) => {
-  const app = await workflowApp();
+  const receipts = new ServerRunReceiptStore();
+  const app = await workflowApp(undefined, receipts);
   t.after(async () => app.close());
   const signedUp = await app.inject({
     method: "POST",
@@ -829,7 +830,8 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
     headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
     payload: { sourceId: "b0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "paused", pauseReason: "changed-page" },
   });
-  assert.equal(pausedTest.statusCode, 400);
+  assert.equal(pausedTest.statusCode, 410);
+  assert.equal(pausedTest.json().code, "test-evidence.import-retired");
 
   const testReceipt = await app.inject({
     method: "POST",
@@ -837,8 +839,8 @@ test("creates and publishes a policy-safe workflow for the authenticated tenant"
     headers: { origin: "http://localhost:3000", cookie: signedUp.headers["set-cookie"] ?? "" },
     payload: { sourceId: "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "completed" },
   });
-  assert.equal(testReceipt.statusCode, 201);
-  assert.equal(testReceipt.json().workflow.testRunVerified, true);
+  assert.equal(testReceipt.statusCode, 410);
+  await receipts.importLocalDemoReceipt(response.json().workflow.id, { sourceId: "c0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", outcome: "completed" }, signedUp.json().user);
 
   const published = await app.inject({
     method: "POST",

@@ -1244,25 +1244,11 @@ export async function buildServer(options: ServerOptions = {}) {
     },
   }, async (request, reply) => {
     if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
-    const auth = options.authService;
-    const workflows = options.workflowService;
-    const runReceipts = options.runReceiptStore;
-    if (!auth || !workflows || !runReceipts) return reply.code(503).send({ error: "Draft test verification is not configured." });
-    const user = await auth.currentUser(request.cookies[sessionCookieName]);
-    if (!user) return reply.code(401).send({ error: "Authentication is required." });
-    if (!canImportRunReceipts(user.role)) return reply.code(403).send({ error: "This role cannot confirm draft tests." });
-    const { sourceId, outcome, pauseReason } = request.body;
-    if (typeof sourceId !== "string" || outcome !== "completed" || pauseReason !== undefined) return reply.code(400).send({ error: "Only a completed local test receipt can unlock publication." });
-    try {
-      const receipt = await runReceipts.importDraftTestReceipt(request.params.id, { sourceId, outcome }, user);
-      if (!receipt) return reply.code(404).send({ error: "Draft workflow not found or unsupported for local testing." });
-      const workflow = await workflows.reviewDraft(user, request.params.id);
-      if (!workflow) return reply.code(409).send({ error: "Draft test was recorded, but the draft is no longer available for publication." });
-      return reply.code(201).send({ receipt: redactRunReceipt(receipt), workflow });
-    } catch (error) {
-      if (error instanceof ReceiptAlreadyImportedError) return reply.code(409).send({ error: "This receipt was already saved." });
-      throw error;
-    }
+    return reply.code(410).send({
+      error: "Caller-supplied test receipts no longer unlock publication. Start an exact-draft test run instead.",
+      code: "test-evidence.import-retired",
+      replacement: "/api/v1/runs",
+    });
   });
 
   app.post<{ Params: { id: string }; Body: { sourceId?: unknown; outcome?: unknown; pauseReason?: unknown } }>("/api/v1/workflows/:id/run-receipts/import", {

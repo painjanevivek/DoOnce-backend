@@ -12,6 +12,14 @@ export class PostgresArtifactMetadataStore implements ArtifactMetadataStore {
       SELECT $1, $2, runs.id, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13 FROM workflow_runs runs
       WHERE runs.id = $3 AND runs.requested_by = app.current_user_id()
         AND EXISTS (SELECT 1 FROM executor_leases leases WHERE leases.run_id = runs.id AND leases.token_hash = $14)
+        AND ($4 IS NULL OR EXISTS (
+          SELECT 1
+          FROM workflow_step_runs executed_step
+          JOIN workflow_versions versions ON versions.workflow_id = runs.workflow_id AND versions.version = runs.workflow_version
+          CROSS JOIN LATERAL jsonb_array_elements(versions.definition->'steps') declared_step
+          WHERE executed_step.run_id = runs.id AND executed_step.step_id = $4 AND executed_step.status = 'verified'
+            AND declared_step->>'id' = $4::text AND declared_step->>'action' = 'download'
+        ))
         AND ($5 = 'debug' OR ($5 = 'workflow-output' AND runs.status = 'completed') OR ($5 = 'publication-evidence' AND runs.mode = 'test' AND runs.status = 'completed') OR ($5 = 'pinned' AND $15 = 'owner'))
       RETURNING *`, [metadata.id, user.tenantId, metadata.runId, metadata.stepId ?? null, metadata.retentionClass, metadata.fileName, metadata.contentType, metadata.byteSize, metadata.checksumSha256, metadata.storageKey, metadata.expiresAt, metadata.pinnedAt, metadata.createdAt, leaseTokenHash, user.role])).rows[0];
     if (!row) throw new Error("Artifact run was not found.");

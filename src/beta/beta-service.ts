@@ -6,6 +6,7 @@ import {
   betaFailureCategories,
   betaObservationStages,
   betaTaskCategories,
+  attendedWedgeCategories,
   type BetaEnrollmentStatus,
   type BetaFailureCategory,
   type BetaObservationStage,
@@ -53,11 +54,15 @@ export class BetaService {
   public async enroll(user: AuthenticatedUser, input: unknown): Promise<BetaWorkflowEnrollment> {
     requireCoordinator(user);
     const value = record(input);
+    const taskCategory = member(value.taskCategory, betaTaskCategories, "task category");
+    if (!attendedWedgeCategories.includes(taskCategory as (typeof attendedWedgeCategories)[number])) {
+      throw new BetaInputError("This task category is not enabled for the attended beta wedge.");
+    }
     const baselineMinutes = number(value.baselineDurationMinutes, "Baseline duration", 1 / 60, 1440);
     const created = await this.store.enroll(user, {
       id: randomUUID(),
       workflowId: uuid(value.workflowId),
-      taskCategory: member(value.taskCategory, betaTaskCategories, "task category"),
+      taskCategory,
       baselineDurationSeconds: Math.round(baselineMinutes * 60),
       baselineErrorRatePercent: number(value.baselineErrorRatePercent, "Baseline error rate", 0, 100),
     });
