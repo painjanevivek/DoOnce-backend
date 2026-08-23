@@ -4,7 +4,7 @@ The DoOnce backend stores versioned browser workflows, validates workflow contra
 
 ## Current alpha foundation
 
-The current iteration exposes a local API with typed workflow validation, immutable workflow publication, lifecycle events, redacted run receipts, and database-backed account sessions. It does not yet execute general WorkflowSpec steps.
+The repository contains a production-oriented alpha foundation for authoring, capture compilation, immutable publication, attended and hosted execution, scheduling, verification evidence, and repair. These capabilities are not presented as generally deployed or customer-proven; consult the [capability matrix](docs/product/capability-matrix.md) before enabling an external path.
 
 ### Current capability boundary
 
