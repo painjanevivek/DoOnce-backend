@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "proposalId": "replace-with-proposal-id",
+  "capability": { "kind": "action", "name": "replace-capability" },
+  "demand": { "evidenceReference": "TBD", "workflowIds": [], "affectedUsers": 0, "repeatedRuns": 0, "failureCodes": [] },
+  "representation": { "workflowSpecReference": "TBD", "compatibilityReference": "TBD", "unsupportedBoundaryReference": "TBD" },
+  "verification": { "successCriteriaReference": "TBD", "failureBehaviorReference": "TBD", "unitTestReference": "TBD", "contractTestReference": "TBD", "integrationTestReference": "TBD", "browserTestReference": "TBD", "endToEndTestReference": "TBD" },
+  "authorization": { "securityReviewReference": "TBD", "privacyReviewReference": "TBD", "objectPolicyReference": "TBD" },
+  "operations": { "owner": "Unassigned", "costModelReference": "TBD", "metricsReference": "TBD", "alertReference": "TBD", "incidentRunbookReference": "TBD" },
+  "migration": { "strategy": "no-change", "migrationReference": "TBD", "rollbackReference": "TBD", "earliestRuntimeVersion": "0.0.0" },
+  "decision": { "outcome": "needs-evidence", "reviewers": [] }
+}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "workflowSpecVersions": [1],
+  "executableActions": ["navigate", "wait", "read", "select", "type", "upload", "download", "compare", "branch", "ask-approval", "stop"],
+  "prohibitedActions": ["submit", "delete", "payment", "credential", "otp"],
+  "executorKinds": ["extension", "hosted-browser"],
+  "attendedWedgeCategories": ["report-download", "table-extraction"],
+  "authoringProviders": ["template"]
+}
