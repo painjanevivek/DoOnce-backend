@@ -37,3 +37,5 @@ The frontend image listens on port `3000`. The backend image listens on port `40
 - smoke-test record, including kill-switch activation and recovery;
 - rollback timing and validation record; and
 - signed review by engineering, security, and the release owner.
+
+Attach these references to a launch manifest and run `npm run release:check -- --file=<manifest>`. A successful rehearsal closes only its automated gates; legal, publisher, provider, support, and pricing approvals remain separate external gates.

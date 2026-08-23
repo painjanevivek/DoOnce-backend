@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "replace-with-release-id",
+  "backendCommit": "0000000000000000000000000000000000000000",
+  "frontendCommit": "0000000000000000000000000000000000000000",
+  "gates": [
+    { "id": "source-verification", "type": "automated", "status": "pending" },
+    { "id": "security-diff", "type": "automated", "status": "pending" },
+    { "id": "dependency-container-scan", "type": "automated", "status": "pending" },
+    { "id": "migration-rehearsal", "type": "automated", "status": "pending" },
+    { "id": "restore-drill", "type": "automated", "status": "pending" },
+    { "id": "rollback-rehearsal", "type": "automated", "status": "pending" },
+    { "id": "extension-release-candidate", "type": "automated", "status": "pending" },
+    { "id": "extension-publisher-approval", "type": "external", "status": "pending" },
+    { "id": "infrastructure-provider-selection", "type": "external", "status": "pending" },
+    { "id": "legal-policy-approval", "type": "external", "status": "pending" },
+    { "id": "support-incident-ownership", "type": "external", "status": "pending" },
+    { "id": "pricing-package-evidence", "type": "external", "status": "pending" }
+  ]
+}
