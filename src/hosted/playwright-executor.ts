@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import type { Browser, BrowserContext, BrowserContextOptions, Download, Locator, Page } from "playwright-core";
 import { chromium } from "playwright-core";
 import type { LocatorCandidate, RunRequest, RunResult, StepResult, WorkflowSpec, WorkflowStep } from "../contracts/protocol.js";
+import { assertPublicWorkflowUrl, compileBoundedPattern } from "../security/network-policy.js";
 import type { SecretProvider } from "./secret-provider.js";
 
 export interface HostedExecutionLimits {
@@ -63,8 +64,12 @@ export class PlaywrightExecutor implements HostedExecutor {
     });
     await context.route("**/*", async (route) => {
       const url = new URL(route.request().url());
-      if (isAllowedUrl(url, input.workflow.allowedDomains)) await route.continue();
-      else await route.abort("blockedbyclient");
+      try {
+        await assertPublicWorkflowUrl(url, input.workflow.allowedDomains);
+        await route.continue();
+      } catch {
+        await route.abort("blockedbyclient");
+      }
     });
     const page = await context.newPage();
     const variables = { ...input.request.inputs };
@@ -199,15 +204,8 @@ function parseStorageState(value: string): NonNullable<BrowserContextOptions["st
   }
 }
 
-function isAllowedUrl(url: URL, domains: string[]): boolean {
-  if (["data:", "about:", "blob:"].includes(url.protocol)) return true;
-  return (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))
-    && domains.some((domain) => url.hostname === domain || url.hostname.endsWith(`.${domain}`));
-}
-
 function targetUrl(domain: string, path: string): string {
-  const protocol = ["localhost", "127.0.0.1"].includes(domain) ? "http" : "https";
-  return new URL(path.startsWith("/") ? path : `/${path}`, `${protocol}://${domain}`).toString();
+  return new URL(path.startsWith("/") ? path : `/${path}`, `https://${domain}`).toString();
 }
 
 function requireInput(name: string, variables: Record<string, string>): string {
@@ -220,7 +218,7 @@ function compare(observed: string, operator: "equals" | "contains" | "matches", 
   if (operator === "equals") return observed === expected;
   if (operator === "contains") return observed.includes(expected);
   try {
-    return new RegExp(expected, "u").test(observed);
+    return compileBoundedPattern(expected).test(observed.slice(0, 10_000));
   } catch {
     throw new Error("The workflow contains an invalid comparison pattern.");
   }

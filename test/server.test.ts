@@ -356,6 +356,7 @@ test("negotiates and synchronizes an authenticated capture batch", async (t) => 
     captureService,
     canonicalWorkflowService,
     captureCompilationService: new CaptureCompilationService(captureService, new CaptureWorkflowCompiler(), canonicalWorkflowService),
+    extensionOrigins: ["chrome-extension://abcdefghijklmnopabcdefghijklmnop"],
   });
   t.after(async () => app.close());
   const handshake = await app.inject({ method: "POST", url: "/api/v1/capture-sessions/handshake", payload: validProtocolFixtures.CaptureHandshake });

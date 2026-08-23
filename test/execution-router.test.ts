@@ -28,3 +28,8 @@ test("rejects interactive approval before hosted work is queued", () => {
   const approval: WorkflowSpec = { ...workflow, steps: [{ id: "22222222-2222-4222-8222-222222222222", action: "ask-approval", name: "Approve", expectedOutcome: "Approved", prompt: "Continue?" }] };
   assert.throws(() => routeExecution(approval, { triggerKind: "schedule", sessionLocation: "managed" }), /ask-approval/);
 });
+
+test("rejects loopback workflow domains before hosted work is queued", () => {
+  const loopback: WorkflowSpec = { ...workflow, allowedDomains: ["127.0.0.1"], steps: [{ ...workflow.steps[0]!, target: { domain: "127.0.0.1", path: "/" } }] };
+  assert.throws(() => routeExecution(loopback, { triggerKind: "schedule", sessionLocation: "managed" }), /loopback/);
+});

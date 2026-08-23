@@ -15,6 +15,7 @@ export interface WebhookEndpointRecord extends WebhookEndpoint {
   tenantId: string;
   createdBy: string;
   createdByEmail: string;
+  currentRole: AuthenticatedUser["role"];
   signingSecretReference: string;
 }
 
@@ -42,6 +43,7 @@ export class WebhookService {
       tenantId: user.tenantId,
       createdBy: user.userId,
       createdByEmail: user.email,
+      currentRole: user.role,
       workflowId: uuid(input.workflowId),
       sessionProfileId: uuid(input.sessionProfileId),
       signingSecretReference,
@@ -64,7 +66,7 @@ export class WebhookService {
     const secret = await this.secrets.resolve(endpoint.signingSecretReference);
     verifySignature(secret, timestamp, canonicalBody, headers.signature);
     await this.store.recordReceipt(endpoint, idempotencyKey);
-    const user: AuthenticatedUser = { tenantId: endpoint.tenantId, userId: endpoint.createdBy, email: endpoint.createdByEmail, role: "builder" };
+    const user: AuthenticatedUser = { tenantId: endpoint.tenantId, userId: endpoint.createdBy, email: endpoint.createdByEmail, role: endpoint.currentRole };
     const result = await this.runs.create(user, {
       workflowId: endpoint.workflowId,
       inputs: parsed.inputs,

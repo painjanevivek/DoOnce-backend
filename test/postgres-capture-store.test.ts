@@ -15,7 +15,7 @@ test("stores one capture batch with a locked cursor and one bulk action insert",
     connect: async () => ({
       query: async (sql: string, values?: unknown[]) => {
         queries.push({ sql, values });
-        if (sql.startsWith("SELECT accepted_through, status FROM capture_batches")) return { rows: [] };
+        if (sql.includes("FROM capture_batches batches")) return { rows: [] };
         if (sql.startsWith("SELECT accepted_through, status, approved_origins FROM capture_sessions")) return { rows: [{ accepted_through: -1, status: "recording", approved_origins: [] }] };
         return { rows: [] };
       },
@@ -38,7 +38,7 @@ test("acknowledges a retried batch without inserting its actions twice", async (
     connect: async () => ({
       query: async (sql: string) => {
         queries.push(sql);
-        if (sql.startsWith("SELECT accepted_through, status FROM capture_batches")) {
+        if (sql.includes("FROM capture_batches batches")) {
           return { rows: [{ accepted_through: 0, status: "accepted" }] };
         }
         return { rows: [] };
@@ -103,7 +103,7 @@ test("lists bounded recent capture summaries with compiled draft references", as
 test("enforces total action and origin bounds across synchronization batches", async () => {
   const base = validProtocolFixtures.CaptureSyncRequest as CaptureSyncRequest;
   const query = async (sql: string) => {
-    if (sql.startsWith("SELECT accepted_through, status FROM capture_batches")) return { rows: [] };
+    if (sql.includes("FROM capture_batches batches")) return { rows: [] };
     if (sql.startsWith("SELECT accepted_through, status, approved_origins")) return { rows: [{ accepted_through: 999, status: "recording", approved_origins: Array.from({ length: 20 }, (_, index) => `https://origin-${index}.example.test`) }] };
     return { rows: [] };
   };
@@ -115,7 +115,7 @@ test("enforces total action and origin bounds across synchronization batches", a
   const originStore = new PostgresCaptureStore({
     connect: async () => ({
       query: async (sql: string) => {
-        if (sql.startsWith("SELECT accepted_through, status FROM capture_batches")) return { rows: [] };
+        if (sql.includes("FROM capture_batches batches")) return { rows: [] };
         if (sql.startsWith("SELECT accepted_through, status, approved_origins")) return { rows: [{ accepted_through: 0, status: "recording", approved_origins: Array.from({ length: 20 }, (_, index) => `https://origin-${index}.example.test`) }] };
         return { rows: [] };
       },

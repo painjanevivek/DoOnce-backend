@@ -110,6 +110,10 @@ export function compileCaptureSession(input: unknown): WorkflowCompilation {
     }
 
     if (action.eventKind === "input" || action.eventKind === "change" || action.eventKind === "select") {
+      if (action.value?.classification === "secret-placeholder" || action.value?.classification === "intentionally-omitted" || /^(password|hidden)$/i.test(action.target?.inputType ?? "")) {
+        addUnsupported(action, actionIds, stepId, "Protected or intentionally omitted fields cannot become executable workflow inputs.", addStep, addWarning);
+        continue;
+      }
       if (!target) {
         addUnsupported(action, actionIds, stepId, "The recorded field has no durable locator.", addStep, addWarning);
         continue;

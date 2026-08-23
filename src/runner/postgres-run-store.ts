@@ -38,7 +38,7 @@ export class PostgresRunStore implements RunStore {
          SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15
          WHERE $10::uuid IS NULL OR EXISTS (
            SELECT 1 FROM browser_session_profiles
-           WHERE id = $10 AND tenant_id = $2 AND location = 'managed' AND enabled = true
+           WHERE id = $10 AND tenant_id = $2 AND created_by = $3 AND location = 'managed' AND enabled = true
          )
          ON CONFLICT (tenant_id, requested_by, idempotency_key) DO NOTHING
          RETURNING *`,
@@ -82,6 +82,7 @@ export class PostgresRunStore implements RunStore {
         `WITH candidate AS (
            SELECT id FROM workflow_runs
            WHERE executor = 'extension' AND status IN ('queued', 'running') AND cancel_requested = false
+             AND requested_by = app.current_user_id()
              AND (status = 'queued' OR lease_expires_at IS NULL OR lease_expires_at < now())
            ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1
          )
@@ -106,6 +107,7 @@ export class PostgresRunStore implements RunStore {
            extension_version = $2, extension_capabilities = $3::jsonb, lease_token_hash = $4,
            lease_expires_at = $5, heartbeat_at = now()
          WHERE id = $1 AND executor = 'hosted-browser' AND cancel_requested = false
+           AND requested_by = app.current_user_id()
            AND status IN ('queued', 'running') AND (status = 'queued' OR lease_expires_at IS NULL OR lease_expires_at < now())
          RETURNING *`,
         [input.runId, input.executorVersion, JSON.stringify(["workflow-spec-v1", "isolated-context", "network-allowlist"]), input.leaseTokenHash, input.leaseExpiresAt],
@@ -142,12 +144,12 @@ export class PostgresRunStore implements RunStore {
   }
 
   public heartbeat(user: AuthenticatedUser, runId: string, leaseTokenHash: string, leaseExpiresAt: string): Promise<ExecutionRun | undefined> {
-    return this.withUser(user, async (db) => { const row = (await db.query<RunRow>("UPDATE workflow_runs SET heartbeat_at = now(), lease_expires_at = $3 WHERE id = $1 AND status = 'running' AND lease_token_hash = $2 AND lease_expires_at >= now() RETURNING *", [runId, leaseTokenHash, leaseExpiresAt])).rows[0]; if (!row) return undefined; await db.query("UPDATE executor_leases SET heartbeat_at = now(), expires_at = $3 WHERE run_id = $1 AND token_hash = $2 AND released_at IS NULL", [runId, leaseTokenHash, leaseExpiresAt]); return mapRun(row); });
+    return this.withUser(user, async (db) => { const row = (await db.query<RunRow>("UPDATE workflow_runs SET heartbeat_at = now(), lease_expires_at = $3 WHERE id = $1 AND requested_by = app.current_user_id() AND status = 'running' AND lease_token_hash = $2 AND lease_expires_at >= now() RETURNING *", [runId, leaseTokenHash, leaseExpiresAt])).rows[0]; if (!row) return undefined; await db.query("UPDATE executor_leases SET heartbeat_at = now(), expires_at = $3 WHERE run_id = $1 AND token_hash = $2 AND released_at IS NULL AND expires_at >= now()", [runId, leaseTokenHash, leaseExpiresAt]); return mapRun(row); });
   }
 
   public checkpoint(user: AuthenticatedUser, runId: string, leaseTokenHash: string, checkpoint: RunCheckpoint, leaseExpiresAt: string): Promise<ExecutionRun | undefined> {
     return this.withUser(user, async (db) => {
-      const row = (await db.query<RunRow>("UPDATE workflow_runs SET current_step_index = $3, step_results = $4::jsonb, checkpoint = $5::jsonb, heartbeat_at = now(), lease_expires_at = $6 WHERE id = $1 AND status = 'running' AND lease_token_hash = $2 AND lease_expires_at >= now() RETURNING *", [runId, leaseTokenHash, checkpoint.currentStepIndex, JSON.stringify(checkpoint.stepResults), JSON.stringify(checkpoint), leaseExpiresAt])).rows[0];
+      const row = (await db.query<RunRow>("UPDATE workflow_runs SET current_step_index = $3, step_results = $4::jsonb, checkpoint = $5::jsonb, heartbeat_at = now(), lease_expires_at = $6 WHERE id = $1 AND requested_by = app.current_user_id() AND status = 'running' AND lease_token_hash = $2 AND lease_expires_at >= now() RETURNING *", [runId, leaseTokenHash, checkpoint.currentStepIndex, JSON.stringify(checkpoint.stepResults), JSON.stringify(checkpoint), leaseExpiresAt])).rows[0];
       if (!row) return undefined;
       await upsertStepResults(db, user.tenantId, runId, checkpoint.stepResults);
       await db.query("UPDATE executor_leases SET heartbeat_at = now(), expires_at = $3 WHERE run_id = $1 AND token_hash = $2 AND released_at IS NULL", [runId, leaseTokenHash, leaseExpiresAt]);
@@ -158,7 +160,7 @@ export class PostgresRunStore implements RunStore {
 
   public finish(user: AuthenticatedUser, runId: string, leaseTokenHash: string, result: RunResult): Promise<ExecutionRun | undefined> {
     return this.withUser(user, async (db) => {
-      const row = (await db.query<RunRow>("UPDATE workflow_runs SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE $3 END, step_results = $4::jsonb, result = $5::jsonb, finished_at = now(), lease_token_hash = NULL, lease_expires_at = NULL WHERE id = $1 AND status = 'running' AND lease_token_hash = $2 RETURNING *", [runId, leaseTokenHash, result.status, JSON.stringify(result.stepResults), JSON.stringify(result)])).rows[0];
+      const row = (await db.query<RunRow>("UPDATE workflow_runs SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE $3 END, step_results = $4::jsonb, result = $5::jsonb, finished_at = now(), lease_token_hash = NULL, lease_expires_at = NULL WHERE id = $1 AND requested_by = app.current_user_id() AND status = 'running' AND lease_token_hash = $2 AND lease_expires_at >= now() AND EXISTS (SELECT 1 FROM executor_leases leases WHERE leases.run_id = workflow_runs.id AND leases.token_hash = $2 AND leases.released_at IS NULL AND leases.expires_at >= now()) RETURNING *", [runId, leaseTokenHash, result.status, JSON.stringify(result.stepResults), JSON.stringify(result)])).rows[0];
       if (!row) return undefined;
       await upsertStepResults(db, user.tenantId, runId, result.stepResults);
       await db.query("UPDATE executor_leases SET released_at = now() WHERE run_id = $1 AND token_hash = $2", [runId, leaseTokenHash]);

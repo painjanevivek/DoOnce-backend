@@ -12,7 +12,7 @@ export class PostgresCaptureStore implements CaptureStore {
     try {
       return await withTenantTransaction(client, user, async (transaction) => {
         const duplicate = await transaction.query<{ accepted_through: number; status: CaptureSyncAck["status"] }>(
-          "SELECT accepted_through, status FROM capture_batches WHERE session_id = $1 AND batch_id = $2",
+          "SELECT batches.accepted_through, batches.status FROM capture_batches batches JOIN capture_sessions sessions ON sessions.id = batches.session_id WHERE batches.session_id = $1 AND batches.batch_id = $2 AND sessions.created_by = app.current_user_id()",
           [request.sessionId, request.batchId],
         );
         if (duplicate.rows[0]) return ack(request, duplicate.rows[0].accepted_through, "duplicate");
@@ -22,7 +22,7 @@ export class PostgresCaptureStore implements CaptureStore {
           [request.sessionId, user.tenantId, user.userId, [...new Set(request.actions.map((action) => action.origin))]],
         );
         const locked = await transaction.query<{ accepted_through: number; status: string; approved_origins: string[] }>(
-          "SELECT accepted_through, status, approved_origins FROM capture_sessions WHERE id = $1 FOR UPDATE",
+          "SELECT accepted_through, status, approved_origins FROM capture_sessions WHERE id = $1 AND created_by = app.current_user_id() FOR UPDATE",
           [request.sessionId],
         );
         const session = locked.rows[0];
@@ -63,7 +63,7 @@ export class PostgresCaptureStore implements CaptureStore {
         const sessionResult = await transaction.query<{
           id: string; status: CaptureSession["status"]; approved_origins: string[]; accepted_through: number;
           created_at: Date | string; updated_at: Date | string; finalized_at: Date | string | null;
-        }>("SELECT id, status, approved_origins, accepted_through, created_at, updated_at, finalized_at FROM capture_sessions WHERE id = $1", [sessionId]);
+        }>("SELECT id, status, approved_origins, accepted_through, created_at, updated_at, finalized_at FROM capture_sessions WHERE id = $1 AND created_by = app.current_user_id()", [sessionId]);
         const row = sessionResult.rows[0];
         if (!row) return undefined;
         const actionResult = await transaction.query<{ action: RecordedAction }>("SELECT action FROM capture_actions WHERE session_id = $1 ORDER BY sequence", [sessionId]);
@@ -91,7 +91,7 @@ export class PostgresCaptureStore implements CaptureStore {
           id: string; status: CaptureSessionSummary["status"]; created_at: Date | string; finalized_at: Date | string | null;
           action_count: number | string; workflow_id: string | null; compiler_version: string | null;
         }>(
-          "SELECT sessions.id, sessions.status, sessions.created_at, sessions.finalized_at, count(actions.id)::integer AS action_count, compiled.workflow_id, compiled.compiler_version FROM capture_sessions sessions LEFT JOIN capture_actions actions ON actions.session_id = sessions.id LEFT JOIN LATERAL (SELECT versions.workflow_id, versions.compiler_version FROM workflow_versions versions WHERE versions.source_capture_session_id = sessions.id AND versions.status = 'draft' ORDER BY versions.created_at DESC LIMIT 1) compiled ON true GROUP BY sessions.id, compiled.workflow_id, compiled.compiler_version ORDER BY sessions.updated_at DESC LIMIT $1",
+          "SELECT sessions.id, sessions.status, sessions.created_at, sessions.finalized_at, count(actions.id)::integer AS action_count, compiled.workflow_id, compiled.compiler_version FROM capture_sessions sessions LEFT JOIN capture_actions actions ON actions.session_id = sessions.id LEFT JOIN LATERAL (SELECT versions.workflow_id, versions.compiler_version FROM workflow_versions versions WHERE versions.source_capture_session_id = sessions.id AND versions.status = 'draft' ORDER BY versions.created_at DESC LIMIT 1) compiled ON true WHERE sessions.created_by = app.current_user_id() GROUP BY sessions.id, compiled.workflow_id, compiled.compiler_version ORDER BY sessions.updated_at DESC LIMIT $1",
           [limit],
         );
         return result.rows.map((row) => ({

@@ -5,7 +5,7 @@ export type ArtifactRetentionClass = "debug" | "workflow-output" | "publication-
 export interface ArtifactMetadata { id: string; runId: string; stepId?: string; retentionClass: ArtifactRetentionClass; fileName: string; contentType: string; byteSize: number; checksumSha256: string; storageKey: string; createdAt: string; expiresAt: string | null; pinnedAt: string | null }
 export interface ArtifactObjectStore { put(key: string, bytes: Uint8Array): Promise<void>; get(key: string): Promise<Uint8Array | undefined>; delete(key: string): Promise<void> }
 export interface ArtifactMetadataStore {
-  create(user: AuthenticatedUser, metadata: ArtifactMetadata): Promise<ArtifactMetadata>;
+  create(user: AuthenticatedUser, metadata: ArtifactMetadata, leaseTokenHash: string): Promise<ArtifactMetadata>;
   listForRun(user: AuthenticatedUser, runId: string): Promise<ArtifactMetadata[]>;
   find(user: AuthenticatedUser, artifactId: string): Promise<ArtifactMetadata | undefined>;
   listExpired(user: AuthenticatedUser, now: string, limit: number): Promise<ArtifactMetadata[]>;
@@ -28,7 +28,7 @@ export class ArtifactService {
     const expiresAt = retentionExpiry(parsed.retentionClass, new Date(createdAt));
     const record: ArtifactMetadata = { id, runId: uuid(runId), ...(parsed.stepId ? { stepId: parsed.stepId } : {}), retentionClass: parsed.retentionClass, fileName: parsed.fileName, contentType: parsed.contentType, byteSize: parsed.bytes.byteLength, checksumSha256: createHash("sha256").update(parsed.bytes).digest("hex"), storageKey, createdAt, expiresAt, pinnedAt: parsed.retentionClass === "pinned" ? createdAt : null };
     await this.objects.put(storageKey, parsed.bytes);
-    try { return await this.metadata.create(user, record); } catch (error) { await this.objects.delete(storageKey); throw error; }
+    try { return await this.metadata.create(user, record, hashLease(parsed.leaseToken)); } catch (error) { await this.objects.delete(storageKey); throw error; }
   }
 
   public list(user: AuthenticatedUser, runId: string): Promise<ArtifactMetadata[]> { return this.metadata.listForRun(user, uuid(runId)); }
@@ -75,16 +75,18 @@ export class ArtifactService {
   }
 }
 
-function parseArtifactInput(value: unknown, maxBytes: number): { fileName: string; contentType: string; retentionClass: ArtifactRetentionClass; stepId?: string; bytes: Buffer } {
-  if (!isRecord(value) || Object.keys(value).some((key) => !["fileName", "contentType", "retentionClass", "stepId", "base64"].includes(key))) throw new ArtifactInputError("Artifact metadata is invalid.");
+function parseArtifactInput(value: unknown, maxBytes: number): { fileName: string; contentType: string; retentionClass: ArtifactRetentionClass; stepId?: string; bytes: Buffer; leaseToken: string } {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["fileName", "contentType", "retentionClass", "stepId", "base64", "leaseToken"].includes(key))) throw new ArtifactInputError("Artifact metadata is invalid.");
   if (typeof value.fileName !== "string" || !/^[^\\/:*?"<>|\r\n]{1,240}$/.test(value.fileName)) throw new ArtifactInputError("Artifact file name is invalid.");
   if (typeof value.contentType !== "string" || !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i.test(value.contentType) || value.contentType.length > 120) throw new ArtifactInputError("Artifact content type is invalid.");
   if (!isRetention(value.retentionClass) || typeof value.base64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.base64)) throw new ArtifactInputError("Artifact content is invalid.");
   const bytes = Buffer.from(value.base64, "base64");
   if (bytes.byteLength === 0 || bytes.byteLength > maxBytes || bytes.toString("base64").replace(/=+$/, "") !== value.base64.replace(/=+$/, "")) throw new ArtifactInputError(`Artifact content must be between 1 and ${maxBytes} bytes.`);
-  return { fileName: value.fileName, contentType: value.contentType.toLowerCase(), retentionClass: value.retentionClass, ...(value.stepId === undefined ? {} : { stepId: uuid(value.stepId) }), bytes };
+  if (typeof value.leaseToken !== "string" || !/^[A-Za-z0-9_-]{40,64}$/.test(value.leaseToken)) throw new ArtifactInputError("Artifact upload requires the active run lease.");
+  return { fileName: value.fileName, contentType: value.contentType.toLowerCase(), retentionClass: value.retentionClass, ...(value.stepId === undefined ? {} : { stepId: uuid(value.stepId) }), bytes, leaseToken: value.leaseToken };
 }
 function retentionExpiry(retention: ArtifactRetentionClass, now: Date): string | null { const days = retention === "debug" ? 7 : retention === "workflow-output" ? 30 : retention === "publication-evidence" ? 365 : 0; return days ? new Date(now.getTime() + days * 86_400_000).toISOString() : null; }
 function isRetention(value: unknown): value is ArtifactRetentionClass { return value === "debug" || value === "workflow-output" || value === "publication-evidence" || value === "pinned"; }
 function uuid(value: unknown): string { if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new ArtifactInputError("A valid identifier is required."); return value; }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function hashLease(value: string): string { return createHash("sha256").update(value).digest("hex"); }

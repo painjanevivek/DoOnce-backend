@@ -105,6 +105,9 @@ function videoError(error: unknown, reply: import("fastify").FastifyReply) {
 export async function buildServer(options: ServerOptions = {}) {
   const allowedOrigins = allowedOriginsFromEnvironment();
   const extensionOrigins = options.extensionOrigins ?? (process.env.DOONCE_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean);
+  if (extensionOrigins.some((origin) => !/^chrome-extension:\/\/[a-p]{32}$/.test(origin))) {
+    throw new Error("DOONCE_EXTENSION_ORIGINS must contain exact Chrome extension origins.");
+  }
   const browserOrigins = [...allowedOrigins, ...extensionOrigins];
   const operationalControls = options.operationalControls ?? operationalControlsFromEnvironment();
   const requestStartedAt = new WeakMap<FastifyRequest, number>();
@@ -160,11 +163,11 @@ export async function buildServer(options: ServerOptions = {}) {
   });
   await app.register(cors, {
     origin(origin, callback) {
-      if (!origin || browserOrigins.includes(origin) || isExtensionOrigin(origin)) {
+      if (!origin || browserOrigins.includes(origin)) {
         callback(null, true);
         return;
       }
-      callback(new Error("Origin is not allowed."), false);
+      callback(null, false);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
@@ -266,7 +269,7 @@ export async function buildServer(options: ServerOptions = {}) {
     schema: { body: { type: "object", required: ["code"], additionalProperties: false, properties: { code: { type: "string", minLength: 12, maxLength: 32 } } } },
   }, async (request, reply) => {
     const origin = request.headers.origin;
-    if (origin && !isExtensionOrigin(origin) && !browserOrigins.includes(origin)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (origin && !browserOrigins.includes(origin)) return reply.code(403).send({ error: "Origin is not allowed." });
     const captures = options.captureService;
     if (!captures) return reply.code(503).send({ error: "Capture pairing is not configured." });
     try {
@@ -282,7 +285,7 @@ export async function buildServer(options: ServerOptions = {}) {
     schema: { params: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" } } }, body: { type: "object" } },
   }, async (request, reply) => {
     const requestOrigin = request.headers.origin;
-    if (requestOrigin && !browserOrigins.includes(requestOrigin) && !isExtensionOrigin(requestOrigin)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (requestOrigin && !browserOrigins.includes(requestOrigin)) return reply.code(403).send({ error: "Origin is not allowed." });
     const captures = options.captureService;
     const auth = options.authService;
     if (!captures || !auth) return reply.code(503).send({ error: "Capture synchronization is not configured." });
@@ -335,7 +338,7 @@ export async function buildServer(options: ServerOptions = {}) {
     config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
   }, async (request, reply) => {
     const origin = request.headers.origin;
-    if (origin && !isExtensionOrigin(origin) && !browserOrigins.includes(origin)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (origin && !browserOrigins.includes(origin)) return reply.code(403).send({ error: "Origin is not allowed." });
     const captures = options.captureService;
     if (!captures) return reply.code(503).send({ error: "Capture pairing is not configured." });
     return (await captures.revokeExtension(request.headers.authorization)) ? { disconnected: true } : reply.code(401).send({ error: "Extension credential is invalid." });
@@ -1076,7 +1079,7 @@ export async function buildServer(options: ServerOptions = {}) {
   });
 
   app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/runs/:id/artifacts", { bodyLimit: 7_000_000, config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
-    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins) && !isExtensionOrigin(request.headers.origin ?? "")) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (!browserOrigins.includes(request.headers.origin ?? "")) return reply.code(403).send({ error: "Origin is not allowed." });
     const auth = options.authService; const artifacts = options.artifactService;
     if (!auth || !artifacts) return reply.code(503).send({ error: "Artifact storage is not configured." });
     const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? (options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined);
@@ -1451,10 +1454,6 @@ function setSessionCookie(reply: { setCookie(name: string, value: string, option
 
 function hasAllowedOrigin(origin: string | undefined, allowedOrigins: readonly string[]): boolean {
   return typeof origin === "string" && allowedOrigins.includes(origin);
-}
-
-function isExtensionOrigin(origin: string): boolean {
-  return /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
 }
 
 function constantTimeToken(header: string | undefined, expected: string): boolean {

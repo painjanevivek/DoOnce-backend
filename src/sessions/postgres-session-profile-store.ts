@@ -9,6 +9,7 @@ interface ProfileRow extends Record<string, unknown> {
   location: "managed";
   secret_reference: string;
   enabled: boolean;
+  created_by: string;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -31,13 +32,13 @@ export class PostgresSessionProfileStore implements SessionProfileStore {
 
   public list(user: AuthenticatedUser): Promise<BrowserSessionProfile[]> {
     return this.withUser(user, async (db) => (await db.query<ProfileRow>(
-      "SELECT * FROM browser_session_profiles WHERE location = 'managed' ORDER BY name LIMIT 100",
+      "SELECT * FROM browser_session_profiles WHERE location = 'managed' AND created_by = app.current_user_id() ORDER BY name LIMIT 100",
     )).rows.map(publicProfile));
   }
 
   public findInternal(user: AuthenticatedUser, id: string): Promise<BrowserSessionProfileRecord | undefined> {
     return this.withUser(user, async (db) => {
-      const row = (await db.query<ProfileRow>("SELECT * FROM browser_session_profiles WHERE id = $1", [id])).rows[0];
+      const row = (await db.query<ProfileRow>("SELECT * FROM browser_session_profiles WHERE id = $1 AND created_by = app.current_user_id()", [id])).rows[0];
       return row ? { ...publicProfile(row), secretReference: row.secret_reference } : undefined;
     });
   }
@@ -45,7 +46,7 @@ export class PostgresSessionProfileStore implements SessionProfileStore {
   public setEnabled(user: AuthenticatedUser, id: string, enabled: boolean): Promise<BrowserSessionProfile | undefined> {
     return this.withUser(user, async (db) => {
       const row = (await db.query<ProfileRow>(
-        "UPDATE browser_session_profiles SET enabled = $2, updated_at = now() WHERE id = $1 RETURNING *",
+        "UPDATE browser_session_profiles SET enabled = $2, updated_at = now() WHERE id = $1 AND created_by = app.current_user_id() RETURNING *",
         [id, enabled],
       )).rows[0];
       return row ? publicProfile(row) : undefined;
@@ -54,7 +55,7 @@ export class PostgresSessionProfileStore implements SessionProfileStore {
 
   public remove(user: AuthenticatedUser, id: string): Promise<boolean> {
     return this.withUser(user, async (db) => Boolean((await db.query<{ id: string }>(
-      "DELETE FROM browser_session_profiles WHERE id = $1 RETURNING id",
+      "DELETE FROM browser_session_profiles WHERE id = $1 AND created_by = app.current_user_id() RETURNING id",
       [id],
     )).rows[0]));
   }

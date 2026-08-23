@@ -46,6 +46,9 @@ export function routeExecution(
   if (workflow.steps.length > 500) {
     throw new ExecutionRoutingError("Managed execution supports at most 500 steps per run.");
   }
+  if (workflow.allowedDomains.some((domain) => domain === "localhost" || domain === "127.0.0.1" || domain === "::1")) {
+    throw new ExecutionRoutingError("Managed execution cannot target loopback or private development hosts.");
+  }
 
   return {
     executor: "hosted-browser",

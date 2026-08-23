@@ -77,6 +77,15 @@ test("represents unsupported actions as review steps with explicit warnings", ()
   assert.equal(compilation.warnings.some(({ code }) => code === "compiler.missing-final-assertion"), true);
 });
 
+test("never compiles protected captured values into executable input steps", () => {
+  const session = reportDownloadSession();
+  session.actions = [{ ...session.actions[1]!, id: actionIds[0], sequence: 0, target: evidence("textbox", "Password", "password", "password"), value: { classification: "secret-placeholder", placeholder: "{{secret}}", length: 0 } }];
+  const compilation = compileCaptureSession(session);
+  assert.equal(compilation.workflow.inputs.length, 0);
+  assert.equal(compilation.workflow.steps[0]?.action, "ask-approval");
+  assert.equal(compilation.coverage[0]?.outcome, "unsupported");
+});
+
 test("keeps optional authoring-provider output separate from the deterministic draft", async () => {
   const suggestion: AuthoringSuggestion = { path: "/workflow/title", value: "Download weekly report", confidence: 0.8, reason: "The page title and final download suggest a report workflow.", actionIds: [actionIds[2]] };
   const compiler = new CaptureWorkflowCompiler({ suggest: async () => [suggestion] });
