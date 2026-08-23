@@ -40,6 +40,7 @@ import { FileSystemVideoStore } from "./video/resumable-video-store.js";
 import { VideoService } from "./video/video-service.js";
 import { BetaService } from "./beta/beta-service.js";
 import { PostgresBetaStore } from "./beta/postgres-beta-store.js";
+import { HostedQualificationRegistry, parseHostedQualifications } from "./hosted/hosted-qualification.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -62,7 +63,8 @@ const jobDatabaseUrl = process.env.JOB_DATABASE_URL;
 const jobQueue = jobDatabaseUrl ? new PgBossJobQueue(jobDatabaseUrl, (error) => console.error(JSON.stringify({ eventCode: "queue.connection_error", errorCode: error.name }))) : undefined;
 if (jobQueue) await jobQueue.start();
 const runStore = pool ? new PostgresRunStore(pool) : undefined;
-const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined) : undefined;
+const hostedQualifications = new HostedQualificationRegistry(parseHostedQualifications(process.env.HOSTED_QUALIFICATIONS_JSON));
+const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined, hostedQualifications) : undefined;
 const scheduleStore = pool ? new PostgresScheduleStore(pool) : undefined;
 const scheduleService = scheduleStore ? new ScheduleService(scheduleStore) : undefined;
 const sessionProfileStore = pool ? new PostgresSessionProfileStore(pool) : undefined;

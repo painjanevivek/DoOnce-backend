@@ -5,6 +5,8 @@ import type { ExecutorKind, RunRequest, RunResult, StepResult, WorkflowSpec } fr
 import { validateProtocolContract } from "../contracts/validation.js";
 import { ExecutionRoutingError, routeExecution, type SessionLocation, type TriggerKind } from "../triggers/execution-router.js";
 import { operationalMetrics } from "../observability/metrics.js";
+import { productAnalytics } from "../observability/product-analytics.js";
+import { HostedQualificationError, HostedQualificationRegistry, type HostedQualificationPolicy } from "../hosted/hosted-qualification.js";
 
 export type RunStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
@@ -72,6 +74,7 @@ export class RunService {
     private readonly store: RunStore,
     private readonly leaseMs = 45_000,
     private readonly dispatcher?: RunDispatcher,
+    private readonly hostedQualifications: HostedQualificationPolicy = new HostedQualificationRegistry([]),
   ) {
     if (!Number.isInteger(leaseMs) || leaseMs < 10_000 || leaseMs > 300_000) throw new Error("Run lease must be between 10 seconds and 5 minutes.");
   }
@@ -85,8 +88,9 @@ export class RunService {
     let route;
     try {
       route = routeExecution(executable.spec, parsed);
+      if (route.executor === "hosted-browser") this.hostedQualifications.requireQualified(executable.spec, executable.checksum);
     } catch (error) {
-      if (error instanceof ExecutionRoutingError) throw new RunInputError(error.message);
+      if (error instanceof ExecutionRoutingError || error instanceof HostedQualificationError) throw new RunInputError(error.message);
       throw error;
     }
     if (route.executor === "hosted-browser" && !parsed.sessionProfileId) {
@@ -105,6 +109,7 @@ export class RunService {
     const requestDigest = digest({ workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: parsed.mode, executor: request.executor, triggerKind: route.triggerKind, sessionProfileId: parsed.sessionProfileId, inputs });
     const stored = await this.store.create(user, request, executable, parsed.idempotencyKey, requestDigest, metadata);
     if (!stored.created && stored.requestDigest !== requestDigest) throw new RunConflictError("This idempotency key was already used for a different run request.");
+    if (stored.created) productAnalytics.record({ name: "run_started", executor: stored.run.executor, trigger: route.triggerKind });
     if (stored.created && stored.run.executor === "hosted-browser" && this.dispatcher) {
       const queueJobId = await this.dispatcher.dispatch(user, stored.run);
       await this.store.attachQueueJob?.(user, stored.run.id, queueJobId);
@@ -168,6 +173,8 @@ export class RunService {
     const finished = await this.store.finish(user, runId, hashLease(leaseToken), structuredClone(result));
     if (finished) {
       operationalMetrics.increment("doonce_run_results_total", { executor: existing.executor, status: result.status });
+      productAnalytics.record({ name: "run_outcome", executor: existing.executor, outcome: result.status });
+      if (result.status === "completed") productAnalytics.record({ name: "verified_outcome" });
       operationalMetrics.observe("doonce_run_duration_seconds", { executor: existing.executor }, Math.max(0, new Date(result.finishedAt).getTime() - new Date(result.startedAt).getTime()) / 1000);
       for (const step of result.stepResults) {
         if (step.reasonCode?.startsWith("locator.")) operationalMetrics.increment("doonce_locator_failures_total", { executor: existing.executor, code: step.reasonCode });

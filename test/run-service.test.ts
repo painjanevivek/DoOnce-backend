@@ -3,6 +3,7 @@ import test from "node:test";
 import type { AuthenticatedUser } from "../src/auth/auth-service.js";
 import type { RunRequest, RunResult, WorkflowSpec } from "../src/contracts/protocol.js";
 import { RunConflictError, RunInputError, RunService, type ExecutionRun, type PublishedWorkflow, type RunCheckpoint, type RunStore } from "../src/runner/run-service.js";
+import { HostedQualificationRegistry, parseHostedQualifications } from "../src/hosted/hosted-qualification.js";
 
 const user: AuthenticatedUser = { tenantId: "11111111-1111-4111-8111-111111111111", userId: "22222222-2222-4222-8222-222222222222", email: "runner@example.test", role: "runner" };
 const workflowId = "33333333-3333-4333-8333-333333333333";
@@ -75,6 +76,30 @@ test("binds test runs to the exact editable draft checksum", async () => {
   assert.equal(created.run.workflowVersion, 3);
   assert.equal(created.run.workflowChecksum, "b".repeat(64));
   assert.equal(store.request?.workflowVersion, 3);
+});
+
+test("requires an exact expiring qualification before managed execution", async () => {
+  const managedWorkflow: WorkflowSpec = {
+    ...workflow,
+    successCriteria: [{ id: "77777777-7777-4777-8777-777777777777", kind: "download", operator: "exists" }],
+    steps: [
+      ...workflow.steps,
+      { id: "88888888-8888-4888-8888-888888888888", action: "download", name: "Download", expectedOutcome: "Report downloads", target: { domain: "example.test", locator: { candidates: [{ strategy: "role", value: "button", name: "Download" }] } } },
+    ],
+  };
+  const store = new MemoryRunStore();
+  store.published = { ...store.published!, spec: managedWorkflow };
+  const input = { workflowId, inputs: { region: "north" }, triggerKind: "schedule", sessionLocation: "managed", sessionProfileId: "99999999-9999-4999-8999-999999999999", idempotencyKey: "schedule:qualified" };
+  await assert.rejects(() => new RunService(store).create(user, input), /not passed hosted qualification/);
+
+  const qualifications = parseHostedQualifications(JSON.stringify([{
+    id: "example-report-v2", pattern: "report-download", workflowChecksum: "a".repeat(64), allowedDomain: "example.test",
+    browserImageDigest: `sha256:${"b".repeat(64)}`, evidenceReference: "drills/example-report-v2.json",
+    qualifiedAt: "2026-08-20T00:00:00.000Z", expiresAt: "2099-09-20T00:00:00.000Z",
+    controls: { isolation: "verified", egress: "verified", managedSession: "verified" },
+  }]));
+  const created = await new RunService(store, 45_000, undefined, new HostedQualificationRegistry(qualifications)).create(user, input);
+  assert.equal(created.created, true);
 });
 
 test("claims, heartbeats, checkpoints, and completes with an opaque lease", async () => {
