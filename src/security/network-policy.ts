@@ -1,6 +1,7 @@
 import type { LookupAddress } from "node:dns";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { RE2JS } from "re2js";
 
 export type HostResolver = (hostname: string) => Promise<readonly LookupAddress[]>;
 
@@ -51,10 +52,7 @@ function isPublicIpv4(address: string): boolean {
     && !(first === 203 && second === 0 && third === 113);
 }
 
-export function compileBoundedPattern(pattern: string): RegExp {
+export function compileBoundedPattern(pattern: string): RE2JS {
   if (pattern.length === 0 || pattern.length > 256) throw new Error("The comparison pattern is outside the supported bound.");
-  if (/\\[1-9]|\(\?<[=!]|\((?:[^()\\]|\\.)*[+*{](?:[^()\\]|\\.)*\)[+*{]|(?:\+|\*|\{\d+(?:,\d*)?\}){2}/u.test(pattern)) {
-    throw new Error("The comparison pattern uses an unsafe regular-expression construct.");
-  }
-  return new RegExp(pattern, "u");
+  return RE2JS.compile(pattern);
 }

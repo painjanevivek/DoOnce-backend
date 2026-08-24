@@ -15,10 +15,18 @@ test("blocks subdomains, redirects, private ranges, and DNS rebinding", async ()
   await assert.rejects(() => assertPublicWorkflowUrl(new URL("https://reports.example.test/file"), ["reports.example.test"], async () => [{ address: "93.184.216.34", family: 4 }, { address: "10.0.0.8", family: 4 }]));
 });
 
-test("classifies reserved networks and rejects unsafe regular expressions", () => {
+test("classifies reserved networks and evaluates workflow patterns in linear time", () => {
   assert.equal(isPublicIpAddress("8.8.8.8"), true);
   assert.equal(isPublicIpAddress("203.0.113.8"), false);
   assert.equal(compileBoundedPattern("^report-[0-9]+$").test("report-42"), true);
-  assert.throws(() => compileBoundedPattern("(a+)+$"));
+  assert.equal(compileBoundedPattern("^(report|invoice)-[0-9]+$").test("invoice-42"), true);
+
+  const startedAt = performance.now();
+  assert.equal(compileBoundedPattern("^(a|aa)+$").test(`${"a".repeat(40)}b`), false);
+  assert.ok(performance.now() - startedAt < 250, "overlapping alternation must remain time-bounded");
+
+  assert.equal(compileBoundedPattern("^([a-z]+)*$").test(`${"a".repeat(10_000)}!`), false);
+  assert.throws(() => compileBoundedPattern("(report)-\\1"));
+  assert.throws(() => compileBoundedPattern("report(?=-[0-9]+)"));
   assert.throws(() => compileBoundedPattern("a".repeat(257)));
 });
