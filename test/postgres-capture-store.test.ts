@@ -17,6 +17,7 @@ test("stores one capture batch with a locked cursor and one bulk action insert",
         queries.push({ sql, values });
         if (sql.includes("FROM capture_batches batches")) return { rows: [] };
         if (sql.startsWith("SELECT accepted_through, status, approved_origins FROM capture_sessions")) return { rows: [{ accepted_through: -1, status: "recording", approved_origins: [] }] };
+        if (sql.startsWith("SELECT origin FROM capture_origin_consents")) return { rows: [{ origin: request.actions[0]?.origin }] };
         return { rows: [] };
       },
       release: () => undefined,

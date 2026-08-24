@@ -32,11 +32,25 @@ export function assertMvpWorkflowAllowed(spec: WorkflowSpec, policy: Readonly<Mv
   if (spec.allowedDomains.length !== 1 || spec.allowedDomains[0] !== pilotDomain) {
     throw new MvpPolicyError("MVP workflows must use only the configured pilot origin.");
   }
+  if (spec.inputs.length !== 0) {
+    throw new MvpPolicyError("MVP report-download workflows cannot persist or replay typed inputs.");
+  }
 
   const qualification = qualifyAttendedWedge("report-download", spec);
   if (!qualification.qualified) {
     throw new MvpPolicyError(`MVP publication requires the attended report-download pattern: ${qualification.issues.join(", ")}.`);
   }
+  const downloadAssertions = [
+    ...(spec.successCriteria ?? []),
+    ...spec.steps.flatMap((step) => step.assertions ?? []),
+  ].filter((assertion) => assertion.kind === "file-downloaded");
+  const hasBoundedFileVerification = downloadAssertions.some((assertion) =>
+    (assertion.minBytes ?? 0) > 0
+    && (assertion.maxBytes ?? 0) >= (assertion.minBytes ?? 0)
+    && (assertion.maxBytes ?? Number.MAX_SAFE_INTEGER) <= 100 * 1024 * 1024
+    && (Boolean(assertion.fileNamePattern) || Boolean(assertion.contentTypes?.length)),
+  );
+  if (!hasBoundedFileVerification) throw new MvpPolicyError("MVP publication requires a filename or content-type rule and a bounded report size range.");
 }
 
 export function assertLegacyMvpWorkflowAllowed(draft: WorkflowDraft, policy: Readonly<MvpPolicy>): void {

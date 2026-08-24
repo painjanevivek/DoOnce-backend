@@ -23,7 +23,7 @@ import {
 import { CaptureConflictError, CaptureInputError, CaptureService } from "./capture/capture-service.js";
 import { CaptureCompilationNotFoundError, CaptureCompilationService } from "./compiler/capture-compilation-service.js";
 import { CaptureCompilationError } from "./compiler/capture-workflow-compiler.js";
-import { RunAccessError, RunConflictError, RunInputError, RunService } from "./runner/run-service.js";
+import { RunAccessError, RunApprovalRejectedError, RunConflictError, RunInputError, RunService } from "./runner/run-service.js";
 import { ArtifactInputError, ArtifactNotFoundError, ArtifactService } from "./artifacts/artifact-service.js";
 import { AuthoringAccessError, AuthoringConflictError, AuthoringInputError, AuthoringLimitError, AuthoringService } from "./authoring/authoring-service.js";
 import { RepairAccessError, RepairConflictError, RepairInputError, RepairService } from "./repair/repair-service.js";
@@ -38,6 +38,8 @@ import { finishSpan, startSpan } from "./observability/tracing.js";
 import { registerBetaRoutes } from "./beta/beta-routes.js";
 import type { BetaService } from "./beta/beta-service.js";
 import { disabledMvpPolicy, type MvpPolicy } from "./system/mvp-policy.js";
+import type { RunResult } from "./contracts/protocol.js";
+import { validateProtocolContract } from "./contracts/validation.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
@@ -283,12 +285,22 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!captures || !auth) return reply.code(503).send({ error: "Capture pairing is not configured." });
     const user = await auth.currentUser(request.cookies[sessionCookieName]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    reply.header("cache-control", "no-store");
     return captures.createPairingCode(user);
+  });
+
+  app.get("/api/v1/capture-sessions/connection", async (request, reply) => {
+    const captures = options.captureService;
+    const auth = options.authService;
+    if (!captures || !auth) return reply.code(503).send({ error: "Capture pairing is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    return { connection: await captures.connectionStatus(user) };
   });
 
   app.post<{ Body: unknown }>("/api/v1/capture-sessions/pair", {
     config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
-    schema: { body: { type: "object", required: ["code"], additionalProperties: false, properties: { code: { type: "string", minLength: 12, maxLength: 32 } } } },
+    schema: { body: { type: "object", required: ["code"], additionalProperties: false, properties: { code: { type: "string", minLength: 12, maxLength: 32 }, extensionVersion: { type: "string", pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$" } } } },
   }, async (request, reply) => {
     const origin = request.headers.origin;
     if (origin && !browserOrigins.includes(origin)) return reply.code(403).send({ error: "Origin is not allowed." });
@@ -311,7 +323,7 @@ export async function buildServer(options: ServerOptions = {}) {
     const captures = options.captureService;
     const auth = options.authService;
     if (!captures || !auth) return reply.code(503).send({ error: "Capture synchronization is not configured." });
-    const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? await captures.authenticateExtension(request.headers.authorization);
+    const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? await captures.authenticateExtension(request.headers.authorization, request.headers["x-doonce-extension-version"]);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
     try {
       const result = await captures.sync(user, request.params.id, request.body);
@@ -364,6 +376,30 @@ export async function buildServer(options: ServerOptions = {}) {
     const captures = options.captureService;
     if (!captures) return reply.code(503).send({ error: "Capture pairing is not configured." });
     return (await captures.revokeExtension(request.headers.authorization)) ? { disconnected: true } : reply.code(401).send({ error: "Extension credential is invalid." });
+  });
+
+  app.post<{ Body: { origin?: unknown } }>("/api/v1/extension/consents", {
+    config: { rateLimit: { max: 20, timeWindow: "10 minutes" } },
+    schema: { body: { type: "object", required: ["origin"], additionalProperties: false, properties: { origin: { type: "string", maxLength: 255 } } } },
+  }, async (request, reply) => {
+    const captures = options.captureService;
+    if (!captures) return reply.code(503).send({ error: "Capture consent is not configured." });
+    const user = await captures.authenticateExtension(request.headers.authorization, request.headers["x-doonce-extension-version"]);
+    if (!user) return reply.code(401).send({ error: "Extension authentication is required." });
+    try { return await captures.grantOriginConsent(user, request.body.origin); }
+    catch (error) { if (error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.consent_invalid" }); throw error; }
+  });
+
+  app.delete<{ Body: { origin?: unknown } }>("/api/v1/extension/consents", {
+    config: { rateLimit: { max: 20, timeWindow: "10 minutes" } },
+    schema: { body: { type: "object", required: ["origin"], additionalProperties: false, properties: { origin: { type: "string", maxLength: 255 } } } },
+  }, async (request, reply) => {
+    const captures = options.captureService;
+    if (!captures) return reply.code(503).send({ error: "Capture consent is not configured." });
+    const user = await captures.authenticateExtension(request.headers.authorization, request.headers["x-doonce-extension-version"]);
+    if (!user) return reply.code(401).send({ error: "Extension authentication is required." });
+    try { return await captures.revokeOriginConsent(user, request.body.origin); }
+    catch (error) { if (error instanceof CaptureInputError) return reply.code(400).send({ error: error.message, code: "capture.consent_invalid" }); throw error; }
   });
 
   app.get("/api/v1/system/safety", async (_request, reply) => {
@@ -1045,11 +1081,26 @@ export async function buildServer(options: ServerOptions = {}) {
     }
   });
 
+  app.post<{ Body: unknown }>("/api/v1/run-approvals", {
+    config: { rateLimit: { max: 20, timeWindow: "10 minutes" } },
+    schema: { body: { type: "object" } },
+  }, async (request, reply) => {
+    if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (operationalControls.killSwitchActive) return reply.code(503).send({ error: "Workflow execution is temporarily disabled.", code: "run.kill_switch" });
+    const auth = options.authService; const runs = options.runService;
+    if (!auth || !runs) return reply.code(503).send({ error: "Workflow execution is not configured." });
+    const user = await auth.currentUser(request.cookies[sessionCookieName]);
+    if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    try { reply.header("cache-control", "no-store"); return await runs.approve(user, request.body); }
+    catch (error) { if (error instanceof RunAccessError) return reply.code(403).send({ error: error.message, code: "run.access_denied" }); if (error instanceof RunInputError) return reply.code(400).send({ error: error.message, code: "run.approval_invalid" }); throw error; }
+  });
+
   app.post<{ Body: unknown }>("/api/v1/runs", {
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     schema: { body: { type: "object" } },
   }, async (request, reply) => {
     if (!hasAllowedOrigin(request.headers.origin, allowedOrigins)) return reply.code(403).send({ error: "Origin is not allowed." });
+    if (operationalControls.killSwitchActive) return reply.code(503).send({ error: "Workflow execution is temporarily disabled.", code: "run.kill_switch" });
     const auth = options.authService;
     const runs = options.runService;
     if (!auth || !runs) return reply.code(503).send({ error: "Workflow execution is not configured." });
@@ -1060,6 +1111,7 @@ export async function buildServer(options: ServerOptions = {}) {
       return reply.code(created.created ? 201 : 200).send(created);
     } catch (error) {
       if (error instanceof RunAccessError) return reply.code(403).send({ error: error.message, code: "run.access_denied" });
+      if (error instanceof RunApprovalRejectedError) return reply.code(409).send({ error: error.message, code: "run.approval_rejected" });
       if (error instanceof RunConflictError) return reply.code(409).send({ error: error.message, code: "run.idempotency_conflict" });
       if (error instanceof RunInputError) return reply.code(400).send({ error: error.message, code: "run.invalid_request" });
       throw error;
@@ -1106,8 +1158,9 @@ export async function buildServer(options: ServerOptions = {}) {
     if (!browserOrigins.includes(request.headers.origin ?? "")) return reply.code(403).send({ error: "Origin is not allowed." });
     const auth = options.authService; const artifacts = options.artifactService;
     if (!auth || !artifacts) return reply.code(503).send({ error: "Artifact storage is not configured." });
-    const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? (options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined);
+    const user = await auth.currentUser(request.cookies[sessionCookieName]) ?? (options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization, request.headers["x-doonce-extension-version"]) : undefined);
     if (!user) return reply.code(401).send({ error: "Authentication is required." });
+    if (mvpPolicy.enabled && !isSafeMvpReceiptArtifact(request.body, request.params.id)) return reply.code(400).send({ error: "MVP artifacts are limited to a redacted run receipt.", code: "artifact.mvp_boundary" });
     try {
       const artifact = await artifacts.create(user, request.params.id, request.body);
       await options.durableWorkers?.registerArtifactCleanup(user);
@@ -1146,30 +1199,35 @@ export async function buildServer(options: ServerOptions = {}) {
   });
 
   app.post<{ Body: unknown }>("/api/v1/extension/runs/claim", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
+    if (operationalControls.killSwitchActive) return reply.code(503).send({ error: "Workflow execution is temporarily disabled.", code: "run.kill_switch" });
     const captures = options.captureService; const runs = options.runService;
     if (!captures || !runs) return reply.code(503).send({ error: "Extension execution is not configured." });
-    const user = await captures.authenticateExtension(request.headers.authorization);
+    const extensionVersion = typeof request.body === "object" && request.body !== null && !Array.isArray(request.body)
+      ? (request.body as Record<string, unknown>).extensionVersion
+      : undefined;
+    const user = await captures.authenticateExtension(request.headers.authorization, extensionVersion);
     if (!user) return reply.code(401).send({ error: "Extension authentication is required." });
     try { const lease = await runs.claim(user, request.body); return lease ? { lease } : reply.code(204).send(); }
     catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message, code: "run.extension_incompatible" }); throw error; }
   });
 
   app.post<{ Params: { id: string }; Body: { leaseToken?: unknown } }>("/api/v1/extension/runs/:id/heartbeat", { config: { rateLimit: { max: 240, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
-    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined;
+    if (operationalControls.killSwitchActive) return reply.code(409).send({ error: "The emergency stop is active. Checkpoint and pause this run.", code: "run.kill_switch" });
+    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization, request.headers["x-doonce-extension-version"]) : undefined;
     if (!user || !options.runService) return reply.code(401).send({ error: "Extension authentication is required." });
     try { const run = await options.runService.heartbeat(user, request.params.id, request.body.leaseToken); return run ? { run } : reply.code(409).send({ error: "The run lease expired.", code: "run.lease_expired" }); }
     catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
   });
 
   app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/extension/runs/:id/checkpoint", { config: { rateLimit: { max: 240, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
-    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined;
+    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization, request.headers["x-doonce-extension-version"]) : undefined;
     if (!user || !options.runService) return reply.code(401).send({ error: "Extension authentication is required." });
-    try { const run = await options.runService.checkpoint(user, request.params.id, request.body); return run ? { run } : reply.code(409).send({ error: "The run lease expired.", code: "run.lease_expired" }); }
+    try { const run = await options.runService.checkpoint(user, request.params.id, request.body); if (run && operationalControls.killSwitchActive) return reply.code(409).send({ error: "Checkpoint saved. The emergency stop requires this run to pause.", code: "run.kill_switch" }); return run ? { run } : reply.code(409).send({ error: "The run lease expired.", code: "run.lease_expired" }); }
     catch (error) { if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
   });
 
   app.post<{ Params: { id: string }; Body: unknown }>("/api/v1/extension/runs/:id/result", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { body: { type: "object" } } }, async (request, reply) => {
-    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization) : undefined;
+    const user = options.captureService ? await options.captureService.authenticateExtension(request.headers.authorization, request.headers["x-doonce-extension-version"]) : undefined;
     if (!user || !options.runService) return reply.code(401).send({ error: "Extension authentication is required." });
     try { const run = await options.runService.finish(user, request.params.id, request.body); return run ? { run } : reply.code(409).send({ error: "The run lease expired.", code: "run.lease_expired" }); }
     catch (error) { if (error instanceof RunConflictError) return reply.code(409).send({ error: error.message, code: "run.result_conflict" }); if (error instanceof RunInputError) return reply.code(400).send({ error: error.message }); throw error; }
@@ -1500,4 +1558,26 @@ function redactRunReceipt(receipt: RunReceipt) {
 
 function canImportRunReceipts(role: "owner" | "builder" | "runner" | "reviewer"): boolean {
   return role === "owner" || role === "builder" || role === "runner";
+}
+
+function isSafeMvpReceiptArtifact(value: unknown, runId: string): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const artifact = value as Record<string, unknown>;
+  if (artifact.fileName !== `run-${runId}-receipt.json` || artifact.contentType !== "application/json" || artifact.retentionClass !== "debug" || typeof artifact.base64 !== "string" || artifact.stepId !== undefined) return false;
+  try {
+    const bytes = Buffer.from(artifact.base64, "base64");
+    if (bytes.length === 0 || bytes.length > 512_000 || bytes.toString("base64").replace(/=+$/, "") !== artifact.base64.replace(/=+$/, "")) return false;
+    const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+    const validation = validateProtocolContract<RunResult>("RunResult", parsed);
+    if (!validation.ok || validation.value.runId !== runId) return false;
+    return !containsForbiddenRuntimeEvidence(parsed);
+  } catch { return false; }
+}
+
+function containsForbiddenRuntimeEvidence(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsForbiddenRuntimeEvidence);
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const forbidden = new Set(["outputs", "selectedLocator", "observedPage", "repairCandidates", "observed", "value", "selector", "titleHint", "textHint", "cssCandidate"]);
+  return Object.entries(record).some(([key, child]) => forbidden.has(key) || containsForbiddenRuntimeEvidence(child));
 }

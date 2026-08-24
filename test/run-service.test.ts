@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuthenticatedUser } from "../src/auth/auth-service.js";
 import type { RunRequest, RunResult, WorkflowSpec } from "../src/contracts/protocol.js";
-import { RunConflictError, RunInputError, RunService, type ExecutionRun, type PublishedWorkflow, type RunCheckpoint, type RunStore } from "../src/runner/run-service.js";
+import { RunApprovalRejectedError, RunConflictError, RunInputError, RunService, type ExecutionRun, type PublishedWorkflow, type RunApprovalRecord, type RunCheckpoint, type RunStore } from "../src/runner/run-service.js";
 import { HostedQualificationRegistry, parseHostedQualifications } from "../src/hosted/hosted-qualification.js";
 import { mvpPolicyFromEnvironment } from "../src/system/mvp-policy.js";
 
@@ -23,10 +23,16 @@ class MemoryRunStore implements RunStore {
   public idempotencyKey = "";
   public leaseHash = "";
   public cancelled = false;
+  public approval: (RunApprovalRecord & { used: boolean }) | undefined;
 
   public async findExecutable(): Promise<PublishedWorkflow | undefined> { return this.published; }
-  public async create(_user: AuthenticatedUser, request: RunRequest, executable: PublishedWorkflow, idempotencyKey: string, requestDigest: string) {
+  public async createApproval(_user: AuthenticatedUser, approval: RunApprovalRecord): Promise<void> { this.approval = { ...approval, used: false }; }
+  public async create(_user: AuthenticatedUser, request: RunRequest, executable: PublishedWorkflow, idempotencyKey: string, requestDigest: string, _metadata?: unknown, approval?: { tokenHash: string; inputDigest: string }) {
     if (this.run && idempotencyKey === this.idempotencyKey) return { created: false, run: this.run, requestDigest: this.requestDigest };
+    if (approval) {
+      if (!this.approval || this.approval.used || Date.parse(this.approval.expiresAt) <= Date.now() || this.approval.tokenHash !== approval.tokenHash || this.approval.inputDigest !== approval.inputDigest || this.approval.workflowVersion !== executable.version || this.approval.workflowChecksum !== executable.checksum) throw new RunApprovalRejectedError();
+      this.approval.used = true;
+    }
     this.request = request; this.requestDigest = requestDigest; this.idempotencyKey = idempotencyKey;
     this.run = { id: request.runId, workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: executable.status === "draft" ? "test" : "production", status: "queued", executor: "extension", requestedAt: request.requestedAt, cancelRequested: false, currentStepIndex: 0, stepResults: [] };
     return { created: true, run: this.run, requestDigest };
@@ -36,6 +42,7 @@ class MemoryRunStore implements RunStore {
   public async timeline() { return this.run ? { run: this.run, steps: this.run.stepResults, events: [], artifacts: [] } : undefined; }
   public async claim(_user: AuthenticatedUser, input: { extensionVersion: string; leaseTokenHash: string; leaseExpiresAt: string }) {
     if (!this.run || this.run.status !== "queued") return undefined;
+    if (this.approval?.used && this.approval.extensionVersion !== input.extensionVersion) return undefined;
     this.leaseHash = input.leaseTokenHash;
     this.run = { ...this.run, status: "running", extensionVersion: input.extensionVersion, leaseExpiresAt: input.leaseExpiresAt, startedAt: new Date().toISOString() };
     return { run: this.run, request: this.request!, workflow };
@@ -107,21 +114,27 @@ test("allows only manual attended runs for the exact MVP report origin", async (
   const locator = { schemaVersion: 1 as const, primary: { strategy: "role" as const, value: "Download report", confidence: 1 }, fallbacks: [] };
   const pilotWorkflow: WorkflowSpec = {
     ...workflow,
+    inputs: [],
     allowedDomains: ["reports.example.test"],
     steps: [{ id: stepId, action: "download", name: "Download", expectedOutcome: "Report downloads", target: { domain: "reports.example.test", path: "/reports", locator } }],
-    successCriteria: [{ id: "66666666-6666-4666-8666-666666666666", name: "Report exists", kind: "file-downloaded", minBytes: 1 }],
+    successCriteria: [{ id: "66666666-6666-4666-8666-666666666666", name: "Report exists", kind: "file-downloaded", fileNamePattern: "report-*.csv", minBytes: 1, maxBytes: 10_000_000 }],
   };
   const policy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
   const store = new MemoryRunStore();
   store.published = { ...store.published!, spec: pilotWorkflow };
   const service = new RunService(store, 45_000, undefined, new HostedQualificationRegistry([]), policy);
-  assert.equal((await service.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "mvp:manual-run" })).run.executor, "extension");
+  const approval = await service.approve(user, { workflowId, inputs: {}, extensionVersion: "0.4.0" });
+  assert.equal((await service.create(user, { workflowId, inputs: {}, idempotencyKey: "mvp:manual-run", approvalToken: approval.approvalToken })).run.executor, "extension");
+  await assert.rejects(
+    () => service.create(user, { workflowId, inputs: {}, idempotencyKey: "mvp:approval-replay", approvalToken: approval.approvalToken }),
+    RunApprovalRejectedError,
+  );
 
   const hostedStore = new MemoryRunStore();
   hostedStore.published = { ...hostedStore.published!, spec: pilotWorkflow };
   const hostedService = new RunService(hostedStore, 45_000, undefined, new HostedQualificationRegistry([]), policy);
   await assert.rejects(
-    () => hostedService.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "mvp:hosted-run", triggerKind: "schedule", sessionLocation: "managed", sessionProfileId: "99999999-9999-4999-8999-999999999999" }),
+    () => hostedService.create(user, { workflowId, inputs: {}, idempotencyKey: "mvp:hosted-run", triggerKind: "schedule", sessionLocation: "managed", sessionProfileId: "99999999-9999-4999-8999-999999999999" }),
     /attended local Chrome session/,
   );
 
@@ -129,9 +142,54 @@ test("allows only manual attended runs for the exact MVP report origin", async (
   wrongOriginStore.published = { ...wrongOriginStore.published!, spec: { ...pilotWorkflow, allowedDomains: ["other.example.test"] } };
   const wrongOriginService = new RunService(wrongOriginStore, 45_000, undefined, new HostedQualificationRegistry([]), policy);
   await assert.rejects(
-    () => wrongOriginService.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "mvp:wrong-origin" }),
+    () => wrongOriginService.create(user, { workflowId, inputs: {}, idempotencyKey: "mvp:wrong-origin" }),
     /configured pilot origin/,
   );
+});
+
+test("binds production approval to inputs, version, extension, expiry, and single use", async () => {
+  const locator = { schemaVersion: 1 as const, primary: { strategy: "capture-id" as const, value: "download-report", confidence: 1 }, fallbacks: [] };
+  const pilotWorkflow: WorkflowSpec = {
+    ...workflow,
+    inputs: [],
+    allowedDomains: ["reports.example.test"],
+    steps: [{ id: stepId, action: "download", name: "Download", expectedOutcome: "Report downloads", target: { domain: "reports.example.test", path: "/reports", locator } }],
+    successCriteria: [{ id: "66666666-6666-4666-8666-666666666666", name: "Report exists", kind: "file-downloaded", fileNamePattern: "report-*.csv", minBytes: 1, maxBytes: 10_000_000 }],
+  };
+  const policy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
+  const store = new MemoryRunStore();
+  store.published = { ...store.published!, spec: pilotWorkflow };
+  const service = new RunService(store, 45_000, undefined, new HostedQualificationRegistry([]), policy);
+
+  const changedInput = await service.approve(user, { workflowId, inputs: {}, extensionVersion: "0.4.0" });
+  await assert.rejects(() => service.create(user, { workflowId, inputs: { unexpected: "value" }, idempotencyKey: "mvp:changed-input", approvalToken: changedInput.approvalToken }), RunInputError);
+
+  const changedVersion = await service.approve(user, { workflowId, inputs: {}, extensionVersion: "0.4.0" });
+  store.published = { ...store.published!, version: 3, checksum: "b".repeat(64) };
+  await assert.rejects(() => service.create(user, { workflowId, inputs: {}, idempotencyKey: "mvp:changed-version", approvalToken: changedVersion.approvalToken }), RunApprovalRejectedError);
+
+  store.published = { ...store.published!, version: 2, checksum: "a".repeat(64) };
+  const extensionBound = await service.approve(user, { workflowId, inputs: {}, extensionVersion: "0.4.0" });
+  await service.create(user, { workflowId, inputs: {}, idempotencyKey: "mvp:extension-bound", approvalToken: extensionBound.approvalToken });
+  assert.equal(await service.claim(user, { extensionVersion: "0.5.0", capabilities: ["workflow-spec-v1"] }), undefined);
+  const claimed = await service.claim(user, { extensionVersion: "0.4.0", capabilities: ["workflow-spec-v1"] });
+  assert.ok(claimed);
+  assert.throws(() => service.checkpoint(user, claimed!.run.id, { leaseToken: claimed!.leaseToken, checkpoint: { currentStepIndex: 0, stepResults: [], variables: { leaked: "page content" } } }), /must not contain/);
+  const unsafeResult: RunResult = { schemaVersion: 1, format: "doonce.run-result.v1", runId: claimed!.run.id, workflowId, workflowVersion: 2, status: "paused", reasonCode: "locator.missing", stepResults: [{ schemaVersion: 1, stepId, status: "paused", reasonCode: "locator.missing", startedAt: claimed!.run.startedAt!, finishedAt: new Date().toISOString(), outputs: { leaked: "page content" } }], startedAt: claimed!.run.startedAt!, finishedAt: new Date().toISOString() };
+  await assert.rejects(() => service.finish(user, claimed!.run.id, { leaseToken: claimed!.leaseToken, result: unsafeResult }), /must not contain/);
+
+  const expiredStore = new MemoryRunStore();
+  expiredStore.published = { ...expiredStore.published!, spec: pilotWorkflow };
+  const expiredService = new RunService(expiredStore, 45_000, undefined, new HostedQualificationRegistry([]), policy);
+  const expired = await expiredService.approve(user, { workflowId, inputs: {}, extensionVersion: "0.4.0" }, new Date("2020-01-01T00:00:00.000Z"));
+  await assert.rejects(() => expiredService.create(user, { workflowId, inputs: {}, idempotencyKey: "mvp:expired", approvalToken: expired.approvalToken }), RunApprovalRejectedError);
+});
+
+test("the emergency stop rejects approvals, new runs, and extension claims", async () => {
+  const service = new RunService(new MemoryRunStore(), 45_000, undefined, new HostedQualificationRegistry([]), { enabled: false }, { workflowChangesEnabled: false, killSwitchActive: true });
+  await assert.rejects(() => service.approve(user, { workflowId, inputs: { region: "north" }, extensionVersion: "0.4.0" }), /emergency stop/);
+  await assert.rejects(() => service.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "kill:creation" }), /emergency stop/);
+  await assert.rejects(() => service.claim(user, { extensionVersion: "0.4.0", capabilities: ["workflow-spec-v1"] }), /emergency stop/);
 });
 
 test("claims, heartbeats, checkpoints, and completes with an opaque lease", async () => {

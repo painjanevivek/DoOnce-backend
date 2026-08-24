@@ -62,7 +62,7 @@ test("rechecks the exact report-download boundary before MVP publication", async
   const policy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
   const verifiedWorkflow: WorkflowSpec = {
     ...workflow,
-    successCriteria: [{ id: "f0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", name: "Report exists", kind: "file-downloaded", minBytes: 1 }],
+    successCriteria: [{ id: "f0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", name: "Report exists", kind: "file-downloaded", fileNamePattern: "report-*.csv", minBytes: 1, maxBytes: 10_000_000 }],
   };
   const allowedStore = new MemoryCanonicalStore();
   const allowed = new CanonicalWorkflowService(allowedStore, policy);

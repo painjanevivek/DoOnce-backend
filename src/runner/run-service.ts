@@ -8,6 +8,7 @@ import { operationalMetrics } from "../observability/metrics.js";
 import { productAnalytics } from "../observability/product-analytics.js";
 import { HostedQualificationError, HostedQualificationRegistry, type HostedQualificationPolicy } from "../hosted/hosted-qualification.js";
 import { assertMvpWorkflowAllowed, disabledMvpPolicy, MvpPolicyError, type MvpPolicy } from "../system/mvp-policy.js";
+import type { OperationalControls } from "../system/operational-controls.js";
 
 export type RunStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
@@ -42,7 +43,8 @@ export interface RunTimeline { run: ExecutionRun; steps: StepResult[]; events: R
 
 export interface RunStore {
   findExecutable(user: AuthenticatedUser, workflowId: string, mode: "test" | "production"): Promise<PublishedWorkflow | undefined>;
-  create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string, metadata?: RunCreationMetadata): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }>;
+  createApproval(user: AuthenticatedUser, approval: RunApprovalRecord): Promise<void>;
+  create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string, metadata?: RunCreationMetadata, approval?: { tokenHash: string; inputDigest: string }): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }>;
   list(user: AuthenticatedUser, limit: number): Promise<ExecutionRun[]>;
   find(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined>;
   timeline(user: AuthenticatedUser, runId: string): Promise<RunTimeline | undefined>;
@@ -53,6 +55,18 @@ export interface RunStore {
   checkpoint(user: AuthenticatedUser, runId: string, leaseTokenHash: string, checkpoint: RunCheckpoint, leaseExpiresAt: string): Promise<ExecutionRun | undefined>;
   finish(user: AuthenticatedUser, runId: string, leaseTokenHash: string, result: RunResult): Promise<ExecutionRun | undefined>;
   cancel(user: AuthenticatedUser, runId: string): Promise<ExecutionRun | undefined>;
+}
+
+export interface RunApprovalRecord {
+  id: string;
+  tokenHash: string;
+  workflowId: string;
+  workflowVersion: number;
+  workflowChecksum: string;
+  inputDigest: string;
+  exactOrigin: string;
+  extensionVersion: string;
+  expiresAt: string;
 }
 
 export interface RunCreationMetadata {
@@ -69,6 +83,7 @@ export interface RunDispatcher {
 export class RunInputError extends Error {}
 export class RunAccessError extends Error {}
 export class RunConflictError extends Error {}
+export class RunApprovalRejectedError extends Error {}
 
 export class RunService {
   public constructor(
@@ -77,11 +92,13 @@ export class RunService {
     private readonly dispatcher?: RunDispatcher,
     private readonly hostedQualifications: HostedQualificationPolicy = new HostedQualificationRegistry([]),
     private readonly mvpPolicy: Readonly<MvpPolicy> = disabledMvpPolicy,
+    private readonly operationalControls: Readonly<OperationalControls> = { workflowChangesEnabled: true, killSwitchActive: false },
   ) {
     if (!Number.isInteger(leaseMs) || leaseMs < 10_000 || leaseMs > 300_000) throw new Error("Run lease must be between 10 seconds and 5 minutes.");
   }
 
   public async create(user: AuthenticatedUser, input: unknown): Promise<{ created: boolean; run: ExecutionRun }> {
+    this.requireExecutionEnabled();
     requireRunRole(user.role);
     const parsed = parseCreateInput(input);
     const executable = await this.store.findExecutable(user, parsed.workflowId, parsed.mode);
@@ -118,7 +135,8 @@ export class RunService {
       ...(parsed.sessionProfileId ? { sessionProfileId: parsed.sessionProfileId } : {}),
     };
     const requestDigest = digest({ workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: parsed.mode, executor: request.executor, triggerKind: route.triggerKind, sessionProfileId: parsed.sessionProfileId, inputs });
-    const stored = await this.store.create(user, request, executable, parsed.idempotencyKey, requestDigest, metadata);
+    if (this.mvpPolicy.enabled && parsed.mode === "production" && !parsed.approvalToken) throw new RunInputError("A fresh run approval is required.");
+    const stored = await this.store.create(user, request, executable, parsed.idempotencyKey, requestDigest, metadata, parsed.approvalToken ? { tokenHash: hashLease(parsed.approvalToken), inputDigest: digest(inputs) } : undefined);
     if (!stored.created && stored.requestDigest !== requestDigest) throw new RunConflictError("This idempotency key was already used for a different run request.");
     if (stored.created) productAnalytics.record({ name: "run_started", executor: stored.run.executor, trigger: route.triggerKind });
     if (stored.created && stored.run.executor === "hosted-browser" && this.dispatcher) {
@@ -136,6 +154,7 @@ export class RunService {
   public timeline(user: AuthenticatedUser, runId: string): Promise<RunTimeline | undefined> { return this.store.timeline(user, requireUuid(runId)); }
 
   public async claim(user: AuthenticatedUser, input: unknown): Promise<ClaimedRun | undefined> {
+    this.requireExecutionEnabled();
     const parsed = parseClaimInput(input);
     const leaseToken = randomBytes(32).toString("base64url");
     const leaseExpiresAt = new Date(Date.now() + this.leaseMs).toISOString();
@@ -144,6 +163,7 @@ export class RunService {
   }
 
   public async claimHosted(user: AuthenticatedUser, runId: string, executorVersion: string): Promise<ClaimedRun | undefined> {
+    this.requireExecutionEnabled();
     if (this.mvpPolicy.enabled) throw new RunInputError("Hosted execution is disabled in MVP mode.");
     if (!this.store.claimHosted) throw new Error("Hosted execution is not configured.");
     if (!/^\d+\.\d+\.\d+$/.test(executorVersion)) throw new RunInputError("Hosted executor version is invalid.");
@@ -164,6 +184,7 @@ export class RunService {
 
   public checkpoint(user: AuthenticatedUser, runId: string, input: unknown): Promise<ExecutionRun | undefined> {
     const parsed = parseCheckpointInput(input);
+    if (this.mvpPolicy.enabled && (Object.keys(parsed.checkpoint.variables).length > 0 || parsed.checkpoint.stepResults.some(hasSensitiveRuntimeEvidence))) throw new RunInputError("MVP checkpoints must not contain page content, selectors, or typed values.");
     return this.store.checkpoint(user, requireUuid(runId), hashLease(parsed.leaseToken), parsed.checkpoint, new Date(Date.now() + this.leaseMs).toISOString());
   }
 
@@ -172,6 +193,7 @@ export class RunService {
     const leaseToken = requireLeaseToken(input.leaseToken);
     const validation = validateProtocolContract<RunResult>("RunResult", input.result);
     if (!validation.ok || validation.value.runId !== runId) throw new RunInputError("The run result is invalid or belongs to another run.");
+    if (this.mvpPolicy.enabled && (validation.value.stepResults.some(hasSensitiveRuntimeEvidence) || validation.value.assertionResults?.some((assertion) => assertion.observed !== undefined))) throw new RunInputError("MVP results must not contain page content, selectors, or typed values.");
     if (validation.value.status === "completed" && !isVerifiedCompletion(validation.value)) {
       throw new RunInputError("A completed run requires verified steps and assertions.");
     }
@@ -204,10 +226,42 @@ export class RunService {
     if (existing?.executor === "hosted-browser" && existing.queueJobId) await this.dispatcher?.cancel?.(existing);
     return cancelled;
   }
+
+  public async approve(user: AuthenticatedUser, input: unknown, now = new Date()): Promise<{ approvalToken: string; expiresAt: string; binding: Omit<RunApprovalRecord, "id" | "tokenHash" | "expiresAt"> }> {
+    this.requireExecutionEnabled();
+    requireRunRole(user.role);
+    if (!isRecord(input) || Object.keys(input).some((key) => !["workflowId", "inputs", "extensionVersion"].includes(key))) throw new RunInputError("The run approval request is invalid.");
+    const workflowId = requireUuid(input.workflowId);
+    if (!isRecord(input.inputs) || !Object.values(input.inputs).every((item) => typeof item === "string" && item.length <= 10_000)) throw new RunInputError("Run inputs must be text values.");
+    const extensionVersion = requireExtensionVersion(input.extensionVersion);
+    const executable = await this.store.findExecutable(user, workflowId, "production");
+    if (!executable) throw new RunInputError("A published workflow version is required before approving a run.");
+    try { assertMvpWorkflowAllowed(executable.spec, this.mvpPolicy); }
+    catch (error) { if (error instanceof MvpPolicyError) throw new RunInputError(error.message); throw error; }
+    const inputs = resolveInputs(executable.spec, input.inputs as Record<string, string>);
+    const exactOrigin = this.mvpPolicy.pilotOrigin;
+    if (!exactOrigin) throw new RunInputError("Run approvals require one configured pilot origin.");
+    const approvalToken = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(now.getTime() + 5 * 60_000).toISOString();
+    const binding = {
+      workflowId: executable.workflowId,
+      workflowVersion: executable.version,
+      workflowChecksum: executable.checksum,
+      inputDigest: digest(inputs),
+      exactOrigin,
+      extensionVersion,
+    };
+    await this.store.createApproval(user, { id: randomUUID(), tokenHash: hashLease(approvalToken), ...binding, expiresAt });
+    return { approvalToken, expiresAt, binding };
+  }
+
+  private requireExecutionEnabled(): void {
+    if (this.operationalControls.killSwitchActive) throw new RunInputError("Workflow execution is temporarily disabled by the emergency stop.");
+  }
 }
 
-function parseCreateInput(value: unknown): { workflowId: string; inputs: Record<string, string>; idempotencyKey: string; mode: "test" | "production"; triggerKind: TriggerKind; sessionLocation: SessionLocation; sessionProfileId?: string } {
-  if (!isRecord(value) || Object.keys(value).some((key) => !["workflowId", "inputs", "idempotencyKey", "mode", "triggerKind", "sessionLocation", "sessionProfileId"].includes(key))) throw new RunInputError("The run request is invalid.");
+function parseCreateInput(value: unknown): { workflowId: string; inputs: Record<string, string>; idempotencyKey: string; mode: "test" | "production"; triggerKind: TriggerKind; sessionLocation: SessionLocation; sessionProfileId?: string; approvalToken?: string } {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["workflowId", "inputs", "idempotencyKey", "mode", "triggerKind", "sessionLocation", "sessionProfileId", "approvalToken"].includes(key))) throw new RunInputError("The run request is invalid.");
   const workflowId = requireUuid(value.workflowId);
   if (!isRecord(value.inputs) || !Object.values(value.inputs).every((item) => typeof item === "string" && item.length <= 10_000)) throw new RunInputError("Run inputs must be text values.");
   if (typeof value.idempotencyKey !== "string" || !/^[a-zA-Z0-9._:-]{8,128}$/.test(value.idempotencyKey)) throw new RunInputError("Provide a valid idempotency key.");
@@ -217,7 +271,8 @@ function parseCreateInput(value: unknown): { workflowId: string; inputs: Record<
   const triggerKind = (value.triggerKind ?? "manual") as TriggerKind;
   const sessionLocation = (value.sessionLocation ?? "user-browser") as SessionLocation;
   const sessionProfileId = value.sessionProfileId === undefined ? undefined : requireUuid(value.sessionProfileId);
-  return { workflowId, inputs: value.inputs as Record<string, string>, idempotencyKey: value.idempotencyKey, mode: value.mode === "test" ? "test" : "production", triggerKind, sessionLocation, ...(sessionProfileId ? { sessionProfileId } : {}) };
+  const approvalToken = value.approvalToken === undefined ? undefined : requireApprovalToken(value.approvalToken);
+  return { workflowId, inputs: value.inputs as Record<string, string>, idempotencyKey: value.idempotencyKey, mode: value.mode === "test" ? "test" : "production", triggerKind, sessionLocation, ...(sessionProfileId ? { sessionProfileId } : {}), ...(approvalToken ? { approvalToken } : {}) };
 }
 
 function resolveInputs(spec: WorkflowSpec, supplied: Record<string, string>): Record<string, string> {
@@ -262,8 +317,13 @@ function isVerifiedCompletion(result: RunResult): boolean {
   ];
   return assertions.every((assertion) => assertion.status === "verified");
 }
+function hasSensitiveRuntimeEvidence(step: StepResult): boolean {
+  return step.outputs !== undefined || step.selectedLocator !== undefined || step.observedPage !== undefined || step.repairCandidates !== undefined || Boolean(step.assertionResults?.some((assertion) => assertion.observed !== undefined));
+}
 function requireUuid(value: unknown): string { if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new RunInputError("A valid identifier is required."); return value; }
 function requireLeaseToken(value: unknown): string { if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{40,64}$/.test(value)) throw new RunInputError("The run lease token is invalid."); return value; }
+function requireApprovalToken(value: unknown): string { if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value)) throw new RunInputError("The run approval is invalid or expired."); return value; }
+function requireExtensionVersion(value: unknown): string { if (typeof value !== "string" || !/^\d+\.\d+\.\d+$/.test(value)) throw new RunInputError("A connected extension version is required."); return value; }
 function hashLease(token: string): string { return createHash("sha256").update(token).digest("hex"); }
 function digest(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }

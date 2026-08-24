@@ -3,7 +3,7 @@ import type { AuthenticatedUser } from "../auth/auth-service.js";
 import type { ExecutorKind, RunRequest, RunResult, StepResult, WorkflowSpec } from "../contracts/protocol.js";
 import type { SqlClient } from "../database/migrator.js";
 import { withTenantTransaction, type TenantContext } from "../database/tenant-context.js";
-import type { ExecutionRun, PublishedWorkflow, RunCheckpoint, RunCreationMetadata, RunStore, RunTimeline, RunTimelineArtifact, RunTimelineEvent } from "./run-service.js";
+import { RunApprovalRejectedError, type ExecutionRun, type PublishedWorkflow, type RunApprovalRecord, type RunCheckpoint, type RunCreationMetadata, type RunStore, type RunTimeline, type RunTimelineArtifact, type RunTimelineEvent } from "./run-service.js";
 
 interface RunRow extends Record<string, unknown> {
   id: string; workflow_id: string; workflow_version: number; status: ExecutionRun["status"]; executor: ExecutorKind; requested_at: Date | string;
@@ -31,25 +31,61 @@ export class PostgresRunStore implements RunStore {
     });
   }
 
-  public async create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string, metadata: RunCreationMetadata = { triggerKind: "manual", sessionLocation: "user-browser" }): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }> {
+  public async createApproval(user: AuthenticatedUser, approval: RunApprovalRecord): Promise<void> {
     return this.withUser(user, async (db) => {
+      await db.query(
+        "UPDATE run_approval_challenges SET expires_at = LEAST(expires_at, now()) WHERE user_id = app.current_user_id() AND consumed_at IS NULL",
+      );
+      await db.query(
+        `INSERT INTO run_approval_challenges
+          (id, tenant_id, user_id, token_hash, workflow_id, workflow_version, workflow_checksum, input_digest, exact_origin, executor, extension_version, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'extension', $10, $11)`,
+        [approval.id, user.tenantId, user.userId, approval.tokenHash, approval.workflowId, approval.workflowVersion, approval.workflowChecksum, approval.inputDigest, approval.exactOrigin, approval.extensionVersion, approval.expiresAt],
+      );
+    });
+  }
+
+  public async create(user: AuthenticatedUser, request: RunRequest, workflow: PublishedWorkflow, idempotencyKey: string, requestDigest: string, metadata: RunCreationMetadata = { triggerKind: "manual", sessionLocation: "user-browser" }, approval?: { tokenHash: string; inputDigest: string }): Promise<{ created: boolean; run: ExecutionRun; requestDigest: string }> {
+    return this.withUser(user, async (db) => {
+      const existing = await db.query<RunRow>("SELECT * FROM workflow_runs WHERE tenant_id = $1 AND requested_by = $2 AND idempotency_key = $3", [user.tenantId, user.userId, idempotencyKey]);
+      const existingRow = existing.rows[0];
+      if (existingRow) return { created: false, run: mapRun(existingRow), requestDigest: existingRow.request_digest };
+
+      let approvalId: string | null = null;
+      let approvedExtensionVersion: string | null = null;
+      if (approval) {
+        const consumed = await db.query<{ id: string; extension_version: string }>(
+          `UPDATE run_approval_challenges
+           SET consumed_at = now(), run_id = $1
+           WHERE token_hash = $2 AND user_id = app.current_user_id()
+             AND workflow_id = $3 AND workflow_version = $4 AND workflow_checksum = $5
+             AND input_digest = $6 AND executor = 'extension'
+             AND consumed_at IS NULL AND expires_at > now()
+           RETURNING id, extension_version`,
+          [request.runId, approval.tokenHash, request.workflowId, request.workflowVersion, workflow.checksum, approval.inputDigest],
+        );
+        const row = consumed.rows[0];
+        if (!row) throw new RunApprovalRejectedError("The run approval is invalid, expired, used, or no longer matches this run.");
+        approvalId = row.id;
+        approvedExtensionVersion = row.extension_version;
+      }
       const result = await db.query<RunRow>(
-        `INSERT INTO workflow_runs (id, tenant_id, requested_by, workflow_id, workflow_version, workflow_checksum, mode, executor, trigger_kind, session_profile_id, inputs, workflow_definition, idempotency_key, request_digest, requested_at)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15
+        `INSERT INTO workflow_runs (id, tenant_id, requested_by, workflow_id, workflow_version, workflow_checksum, mode, executor, trigger_kind, session_profile_id, inputs, workflow_definition, idempotency_key, request_digest, requested_at, approval_challenge_id, approved_extension_version)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17
          WHERE $10::uuid IS NULL OR EXISTS (
            SELECT 1 FROM browser_session_profiles
            WHERE id = $10 AND tenant_id = $2 AND created_by = $3 AND location = 'managed' AND enabled = true
          )
          ON CONFLICT (tenant_id, requested_by, idempotency_key) DO NOTHING
          RETURNING *`,
-        [request.runId, user.tenantId, user.userId, request.workflowId, request.workflowVersion, workflow.checksum, workflow.status === "draft" ? "test" : "production", request.executor, metadata.triggerKind, metadata.sessionProfileId ?? null, JSON.stringify(request.inputs), JSON.stringify(workflow.spec), idempotencyKey, requestDigest, request.requestedAt],
+        [request.runId, user.tenantId, user.userId, request.workflowId, request.workflowVersion, workflow.checksum, workflow.status === "draft" ? "test" : "production", request.executor, metadata.triggerKind, metadata.sessionProfileId ?? null, JSON.stringify(request.inputs), JSON.stringify(workflow.spec), idempotencyKey, requestDigest, request.requestedAt, approvalId, approvedExtensionVersion],
       );
       const inserted = result.rows[0];
-      if (inserted) { await db.query("INSERT INTO run_events (run_id, tenant_id, event_type, metadata) VALUES ($1, $2, 'run.queued', $3::jsonb)", [inserted.id, user.tenantId, JSON.stringify({ mode: inserted.mode, workflowChecksum: inserted.workflow_checksum })]); return { created: true, run: mapRun(inserted), requestDigest: inserted.request_digest }; }
-      const existing = await db.query<RunRow>("SELECT * FROM workflow_runs WHERE tenant_id = $1 AND requested_by = $2 AND idempotency_key = $3", [user.tenantId, user.userId, idempotencyKey]);
-      const row = existing.rows[0];
-      if (!row) throw new Error("The selected managed browser session is unavailable.");
-      return { created: false, run: mapRun(row), requestDigest: row.request_digest };
+      if (inserted) {
+        await db.query("INSERT INTO run_events (run_id, tenant_id, event_type, metadata) VALUES ($1, $2, 'run.queued', $3::jsonb)", [inserted.id, user.tenantId, JSON.stringify({ mode: inserted.mode, workflowChecksum: inserted.workflow_checksum, approvalBound: Boolean(approvalId) })]);
+        return { created: true, run: mapRun(inserted), requestDigest: inserted.request_digest };
+      }
+      throw new Error("The selected managed browser session is unavailable.");
     });
   }
 
@@ -83,6 +119,7 @@ export class PostgresRunStore implements RunStore {
            SELECT id FROM workflow_runs
            WHERE executor = 'extension' AND status IN ('queued', 'running') AND cancel_requested = false
              AND requested_by = app.current_user_id()
+             AND (approved_extension_version IS NULL OR approved_extension_version = $1)
              AND (status = 'queued' OR lease_expires_at IS NULL OR lease_expires_at < now())
            ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1
          )

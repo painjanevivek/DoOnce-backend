@@ -10,7 +10,9 @@ const reportWorkflow: WorkflowSpec = {
     id: "e0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b",
     name: "Report file exists",
     kind: "file-downloaded",
+    fileNamePattern: "report-*.csv",
     minBytes: 1,
+    maxBytes: 10_000_000,
   }],
 };
 
@@ -52,6 +54,10 @@ test("allows only the exact verified report-download wedge", () => {
   assert.throws(
     () => assertMvpWorkflowAllowed({ ...reportWorkflow, steps: reportWorkflow.steps.filter((step) => step.action !== "download") }, policy),
     /single-download-required/,
+  );
+  assert.throws(
+    () => assertMvpWorkflowAllowed({ ...reportWorkflow, inputs: [{ name: "secret", label: "Secret", kind: "text", required: true }] }, policy),
+    /typed inputs/,
   );
   assert.throws(
     () => assertMvpWorkflowAllowed({ ...reportWorkflow, successCriteria: [] }, policy),

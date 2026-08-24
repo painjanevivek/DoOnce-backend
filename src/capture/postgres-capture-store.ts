@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import type { AuthenticatedUser } from "../auth/auth-service.js";
 import type { CaptureSession, CaptureSessionSummary, CaptureSyncAck, CaptureSyncRequest, RecordedAction } from "../contracts/protocol.js";
 import { withTenantTransaction } from "../database/tenant-context.js";
-import { CaptureConflictError, type CaptureStore } from "./capture-service.js";
+import { CaptureConflictError, type CaptureConnectionStatus, type CaptureStore } from "./capture-service.js";
 
 export class PostgresCaptureStore implements CaptureStore {
   public constructor(private readonly pool: Pool) {}
@@ -32,6 +32,13 @@ export class PostgresCaptureStore implements CaptureStore {
         if ((request.actions.at(-1)?.sequence ?? request.cursor) > 999) throw new CaptureConflictError("Capture sessions are limited to 1,000 actions.");
         const approvedOrigins = [...new Set([...session.approved_origins, ...request.actions.map((action) => action.origin)])];
         if (approvedOrigins.length > 20) throw new CaptureConflictError("Capture sessions are limited to 20 browser origins.");
+        if (approvedOrigins.length > 0) {
+          const consent = await transaction.query<{ origin: string }>(
+            "SELECT origin FROM capture_origin_consents WHERE user_id = app.current_user_id() AND origin = ANY($1::text[]) AND revoked_at IS NULL",
+            [approvedOrigins],
+          );
+          if (consent.rows.length !== approvedOrigins.length) throw new CaptureConflictError("Capture consent is missing or has been revoked.");
+        }
 
         if (request.actions.length > 0) {
           await transaction.query(
@@ -118,7 +125,7 @@ export class PostgresCaptureStore implements CaptureStore {
     } finally { client.release(); }
   }
 
-  public async exchangePairingCode(codeHash: string, tokenHash: string): Promise<AuthenticatedUser | undefined> {
+  public async exchangePairingCode(codeHash: string, tokenHash: string, extensionVersion?: string): Promise<AuthenticatedUser | undefined> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -130,7 +137,7 @@ export class PostgresCaptureStore implements CaptureStore {
       if (!identity) { await client.query("ROLLBACK"); return undefined; }
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [identity.tenant_id]);
       await client.query("SELECT set_config('app.user_id', $1, true)", [identity.user_id]);
-      await client.query("INSERT INTO capture_extension_tokens (tenant_id, user_id, token_hash) VALUES ($1, $2, $3)", [identity.tenant_id, identity.user_id, tokenHash]);
+      await client.query("INSERT INTO capture_extension_tokens (tenant_id, user_id, token_hash, extension_version, last_seen_at) VALUES ($1, $2, $3, $4, now())", [identity.tenant_id, identity.user_id, tokenHash, extensionVersion ?? null]);
       await client.query("COMMIT");
       return { tenantId: identity.tenant_id, userId: identity.user_id, role: identity.role, email: identity.email };
     } catch (error) {
@@ -139,10 +146,20 @@ export class PostgresCaptureStore implements CaptureStore {
     } finally { client.release(); }
   }
 
-  public async findExtensionIdentity(tokenHash: string): Promise<AuthenticatedUser | undefined> {
+  public async findExtensionIdentity(tokenHash: string, extensionVersion?: string): Promise<AuthenticatedUser | undefined> {
     const result = await this.pool.query<{ tenant_id: string; user_id: string; role: AuthenticatedUser["role"]; email: string }>(
-      "SELECT tokens.tenant_id, tokens.user_id, memberships.role, users.email FROM capture_extension_tokens tokens JOIN memberships ON memberships.tenant_id = tokens.tenant_id AND memberships.user_id = tokens.user_id JOIN users ON users.id = tokens.user_id WHERE tokens.token_hash = $1 AND tokens.revoked_at IS NULL AND tokens.expires_at > now()",
-      [tokenHash],
+      `WITH touched AS (
+         UPDATE capture_extension_tokens
+         SET last_seen_at = now(), extension_version = COALESCE(extension_version, $2)
+         WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+           AND ($2::text IS NULL OR extension_version IS NULL OR extension_version = $2)
+         RETURNING tenant_id, user_id
+       )
+       SELECT touched.tenant_id, touched.user_id, memberships.role, users.email
+       FROM touched
+       JOIN memberships ON memberships.tenant_id = touched.tenant_id AND memberships.user_id = touched.user_id
+       JOIN users ON users.id = touched.user_id`,
+      [tokenHash, extensionVersion ?? null],
     );
     const identity = result.rows[0];
     return identity ? { tenantId: identity.tenant_id, userId: identity.user_id, role: identity.role, email: identity.email } : undefined;
@@ -151,6 +168,52 @@ export class PostgresCaptureStore implements CaptureStore {
   public async revokeExtensionToken(tokenHash: string): Promise<boolean> {
     const result = await this.pool.query("UPDATE capture_extension_tokens SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL", [tokenHash]);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  public async connectionStatus(user: AuthenticatedUser): Promise<CaptureConnectionStatus> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const result = await transaction.query<{ extension_version: string | null; created_at: Date | string; last_seen_at: Date | string | null }>(
+          "SELECT extension_version, created_at, last_seen_at FROM capture_extension_tokens WHERE user_id = app.current_user_id() AND revoked_at IS NULL AND expires_at > now() AND last_seen_at > now() - interval '2 minutes' ORDER BY last_seen_at DESC LIMIT 1",
+        );
+        const row = result.rows[0];
+        return row ? {
+          connected: true,
+          ...(row.extension_version ? { extensionVersion: row.extension_version } : {}),
+          pairedAt: asIso(row.created_at),
+          ...(row.last_seen_at ? { lastSeenAt: asIso(row.last_seen_at) } : {}),
+        } : { connected: false };
+      });
+    } finally { client.release(); }
+  }
+
+  public async grantOriginConsent(user: AuthenticatedUser, origin: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await withTenantTransaction(client, user, async (transaction) => {
+        await transaction.query(
+          `INSERT INTO capture_origin_consents (tenant_id, user_id, origin)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (tenant_id, user_id, origin)
+           DO UPDATE SET granted_at = now(), revoked_at = NULL, updated_at = now()`,
+          [user.tenantId, user.userId, origin],
+        );
+      });
+    } finally { client.release(); }
+  }
+
+  public async revokeOriginConsent(user: AuthenticatedUser, origin: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      return await withTenantTransaction(client, user, async (transaction) => {
+        const result = await transaction.query<{ origin: string }>(
+          "UPDATE capture_origin_consents SET revoked_at = now(), updated_at = now() WHERE user_id = app.current_user_id() AND origin = $1 AND revoked_at IS NULL RETURNING origin",
+          [origin],
+        );
+        return result.rows.length > 0;
+      });
+    } finally { client.release(); }
   }
 }
 

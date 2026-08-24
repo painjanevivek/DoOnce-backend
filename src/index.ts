@@ -42,10 +42,12 @@ import { BetaService } from "./beta/beta-service.js";
 import { PostgresBetaStore } from "./beta/postgres-beta-store.js";
 import { HostedQualificationRegistry, parseHostedQualifications } from "./hosted/hosted-qualification.js";
 import { mvpPolicyFromEnvironment } from "./system/mvp-policy.js";
+import { operationalControlsFromEnvironment } from "./system/operational-controls.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
 const mvpPolicy = mvpPolicyFromEnvironment();
+const operationalControls = operationalControlsFromEnvironment();
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("PORT must be an integer between 1 and 65535.");
@@ -59,14 +61,14 @@ const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefin
 if (pool) await assertRuntimeDatabaseRole(pool);
 const runReceiptStore = pool && sessionSecret ? new PostgresRunReceiptStore(pool) : undefined;
 const canonicalWorkflowService = pool ? new CanonicalWorkflowService(new PostgresCanonicalWorkflowStore(pool), mvpPolicy) : undefined;
-const captureService = pool ? new CaptureService(new PostgresCaptureStore(pool)) : undefined;
+const captureService = pool ? new CaptureService(new PostgresCaptureStore(pool), mvpPolicy) : undefined;
 const captureCompilationService = captureService && canonicalWorkflowService ? new CaptureCompilationService(captureService, new CaptureWorkflowCompiler(), canonicalWorkflowService) : undefined;
 const jobDatabaseUrl = process.env.JOB_DATABASE_URL;
 const jobQueue = jobDatabaseUrl && !mvpPolicy.enabled ? new PgBossJobQueue(jobDatabaseUrl, (error) => console.error(JSON.stringify({ eventCode: "queue.connection_error", errorCode: error.name }))) : undefined;
 if (jobQueue) await jobQueue.start();
 const runStore = pool ? new PostgresRunStore(pool) : undefined;
 const hostedQualifications = new HostedQualificationRegistry(parseHostedQualifications(process.env.HOSTED_QUALIFICATIONS_JSON));
-const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined, hostedQualifications, mvpPolicy) : undefined;
+const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined, hostedQualifications, mvpPolicy, operationalControls) : undefined;
 const scheduleStore = pool && !mvpPolicy.enabled ? new PostgresScheduleStore(pool) : undefined;
 const scheduleService = scheduleStore ? new ScheduleService(scheduleStore) : undefined;
 const sessionProfileStore = pool && !mvpPolicy.enabled ? new PostgresSessionProfileStore(pool) : undefined;
@@ -113,6 +115,7 @@ const app = await buildServer({
   ...(videoService ? { videoService } : {}),
   ...(betaService ? { betaService } : {}),
   mvpPolicy,
+  operationalControls,
   readinessCheck: async () => { await pool?.query("SELECT 1"); if (jobQueue) await jobQueue.health(); },
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
