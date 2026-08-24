@@ -1,0 +1,13 @@
+{
+  "releaseId": "replace-with-release-id",
+  "deploymentId": "replace-with-deployment-id",
+  "environment": "staging",
+  "backendCommit": "0000000000000000000000000000000000000000",
+  "frontendCommit": "0000000000000000000000000000000000000000",
+  "extensionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "extensionVersion": "0.4.0",
+  "extensionPackageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "migrationSetSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "workflowChecksum": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chromeVersion": "000.0.0.0"
+}

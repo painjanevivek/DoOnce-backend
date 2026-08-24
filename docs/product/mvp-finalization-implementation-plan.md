@@ -238,6 +238,8 @@ Run and retain evidence for:
 
 Every result records release IDs, Chrome version, extension ID/version/package checksum, pilot workflow checksum, environment, tester, timestamp, outcome, failure class, and evidence reference.
 
+Use `docs/release/mvp-smoke-drills.md` and the fail-closed `npm run smoke:create` / `npm run smoke:check` commands so no case can be omitted, duplicated, relabeled, or carried across release contexts.
+
 **Exit gate:** all release smoke cases pass; expected negative cases pause/reject safely; no unclassified failure remains.
 
 **Expected effort:** 1–2 engineering days after Phases 3–5.
