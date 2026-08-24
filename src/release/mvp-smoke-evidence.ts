@@ -79,7 +79,7 @@ export interface MvpSmokeEvaluation {
 }
 
 export function createPendingMvpSmokeManifest(input: unknown): MvpSmokeManifest {
-  const release = parseReleaseContext(input);
+  const release = parseMvpSmokeReleaseContext(input);
   if (!release) throw new Error("Smoke release context is invalid.");
   const contextSha256 = smokeContextSha256(release);
   return {
@@ -94,7 +94,7 @@ export function evaluateMvpSmokeManifest(input: unknown): MvpSmokeEvaluation {
   if (!isRecord(input) || !hasExactKeys(input, ["schemaVersion", "format", "release", "results"]) || input.schemaVersion !== 1 || input.format !== "doonce.mvp-smoke-evidence.v1" || !Array.isArray(input.results)) {
     return { ready: false, blockers: [{ case: "manifest", reason: "Smoke manifest structure is invalid." }] };
   }
-  const release = parseReleaseContext(input.release);
+  const release = parseMvpSmokeReleaseContext(input.release);
   if (!release) return { ready: false, blockers: [{ case: "manifest", reason: "Smoke release context is invalid." }] };
   const contextSha256 = smokeContextSha256(release);
   const blockers: MvpSmokeEvaluation["blockers"] = [];
@@ -148,7 +148,7 @@ export function smokeContextSha256(context: MvpSmokeReleaseContext): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-function parseReleaseContext(value: unknown): MvpSmokeReleaseContext | undefined {
+export function parseMvpSmokeReleaseContext(value: unknown): MvpSmokeReleaseContext | undefined {
   if (!isRecord(value) || !hasExactKeys(value, ["releaseId", "deploymentId", "environment", "backendCommit", "frontendCommit", "extensionId", "extensionVersion", "extensionPackageSha256", "migrationSetSha256", "workflowChecksum", "chromeVersion"])) return undefined;
   if (!isSlug(value.releaseId) || !isSlug(value.deploymentId) || !isSlug(value.environment)) return undefined;
   if (!isCommit(value.backendCommit) || !isCommit(value.frontendCommit) || !isSha256(value.extensionPackageSha256) || !isSha256(value.migrationSetSha256) || !isSha256(value.workflowChecksum)) return undefined;

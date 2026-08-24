@@ -262,6 +262,8 @@ Promotion rule:
 - If the product code works but the value threshold fails, the release is technically pilot-ready but not a validated MVP. Revisit user/workflow selection, not feature breadth.
 - If one recurring site-specific failure appears, fix only that bounded failure, publish a new release candidate, rerun affected security/smoke gates, and restart evidence counting for the changed release.
 
+Use `docs/release/mvp-promotion.md` and the fail-closed `npm run pilot:create` / `npm run pilot:check` commands. The manifest accepts only three pseudonymous pilot records, binds every counted run to the Phase 6 release context, computes the value threshold, and rejects incomplete, unsafe, intervention-dependent, leakage-positive, or unsigned promotion evidence.
+
 **Exit gate:** capability matrix and release manifest are updated with stable pilot evidence references, a founder go/no-go record is signed, and the exact MVP capability is declared deployed and customer-proven.
 
 **Expected calendar time:** determined by the report's real recurrence; it cannot be replaced by synthetic runs.
