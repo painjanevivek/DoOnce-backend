@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyMigrations, createMigration, type SqlClient } from "../src/database/migrator.js";
+import path from "node:path";
+import { applyMigrations, createMigration, readMigrations, type SqlClient } from "../src/database/migrator.js";
 
 class FakeSqlClient implements SqlClient {
   readonly calls: { sql: string; values?: readonly unknown[] }[] = [];
@@ -51,4 +52,10 @@ test("rolls back all pending migrations when one fails", async () => {
 
   assert.equal(client.calls.some((call) => call.sql === "ROLLBACK"), true);
   assert.equal(client.calls.some((call) => call.sql === "COMMIT"), false);
+});
+
+test("discovers both hyphenated and underscored migration names", async () => {
+  const migrations = await readMigrations(path.join(process.cwd(), "database", "migrations"));
+  assert.equal(migrations.length, 23);
+  assert.ok(migrations.some(({ id }) => id === "023_signup_invitations.sql"));
 });

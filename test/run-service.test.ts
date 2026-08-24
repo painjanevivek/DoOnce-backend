@@ -4,6 +4,7 @@ import type { AuthenticatedUser } from "../src/auth/auth-service.js";
 import type { RunRequest, RunResult, WorkflowSpec } from "../src/contracts/protocol.js";
 import { RunConflictError, RunInputError, RunService, type ExecutionRun, type PublishedWorkflow, type RunCheckpoint, type RunStore } from "../src/runner/run-service.js";
 import { HostedQualificationRegistry, parseHostedQualifications } from "../src/hosted/hosted-qualification.js";
+import { mvpPolicyFromEnvironment } from "../src/system/mvp-policy.js";
 
 const user: AuthenticatedUser = { tenantId: "11111111-1111-4111-8111-111111111111", userId: "22222222-2222-4222-8222-222222222222", email: "runner@example.test", role: "runner" };
 const workflowId = "33333333-3333-4333-8333-333333333333";
@@ -100,6 +101,37 @@ test("requires an exact expiring qualification before managed execution", async 
   }]));
   const created = await new RunService(store, 45_000, undefined, new HostedQualificationRegistry(qualifications)).create(user, input);
   assert.equal(created.created, true);
+});
+
+test("allows only manual attended runs for the exact MVP report origin", async () => {
+  const locator = { schemaVersion: 1 as const, primary: { strategy: "role" as const, value: "Download report", confidence: 1 }, fallbacks: [] };
+  const pilotWorkflow: WorkflowSpec = {
+    ...workflow,
+    allowedDomains: ["reports.example.test"],
+    steps: [{ id: stepId, action: "download", name: "Download", expectedOutcome: "Report downloads", target: { domain: "reports.example.test", path: "/reports", locator } }],
+    successCriteria: [{ id: "66666666-6666-4666-8666-666666666666", name: "Report exists", kind: "file-downloaded", minBytes: 1 }],
+  };
+  const policy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
+  const store = new MemoryRunStore();
+  store.published = { ...store.published!, spec: pilotWorkflow };
+  const service = new RunService(store, 45_000, undefined, new HostedQualificationRegistry([]), policy);
+  assert.equal((await service.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "mvp:manual-run" })).run.executor, "extension");
+
+  const hostedStore = new MemoryRunStore();
+  hostedStore.published = { ...hostedStore.published!, spec: pilotWorkflow };
+  const hostedService = new RunService(hostedStore, 45_000, undefined, new HostedQualificationRegistry([]), policy);
+  await assert.rejects(
+    () => hostedService.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "mvp:hosted-run", triggerKind: "schedule", sessionLocation: "managed", sessionProfileId: "99999999-9999-4999-8999-999999999999" }),
+    /attended local Chrome session/,
+  );
+
+  const wrongOriginStore = new MemoryRunStore();
+  wrongOriginStore.published = { ...wrongOriginStore.published!, spec: { ...pilotWorkflow, allowedDomains: ["other.example.test"] } };
+  const wrongOriginService = new RunService(wrongOriginStore, 45_000, undefined, new HostedQualificationRegistry([]), policy);
+  await assert.rejects(
+    () => wrongOriginService.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "mvp:wrong-origin" }),
+    /configured pilot origin/,
+  );
 });
 
 test("claims, heartbeats, checkpoints, and completes with an opaque lease", async () => {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AuthenticatedUser, MembershipRole } from "../auth/auth-service.js";
 import { publishWorkflowDraft, type PublishedWorkflowVersion } from "./versioning.js";
 import { validateWorkflowDraft, type WorkflowDraft } from "./schema.js";
+import { assertLegacyMvpWorkflowAllowed, disabledMvpPolicy, MvpPolicyError, type MvpPolicy } from "../system/mvp-policy.js";
 
 export interface WorkflowSummary {
   id: string;
@@ -51,7 +52,11 @@ export class WorkflowInputError extends Error {}
 export class WorkflowAccessError extends Error {}
 
 export class WorkflowService {
-  public constructor(private readonly store: WorkflowStore, private readonly testEvidence?: WorkflowTestEvidenceStore) {}
+  public constructor(
+    private readonly store: WorkflowStore,
+    private readonly testEvidence?: WorkflowTestEvidenceStore,
+    private readonly mvpPolicy: Readonly<MvpPolicy> = disabledMvpPolicy,
+  ) {}
 
   public async createDraft(user: AuthenticatedUser, input: unknown): Promise<WorkflowDraft> {
     requireWorkflowAuthor(user.role);
@@ -80,6 +85,12 @@ export class WorkflowService {
     if (!draft.policyPreviewedAt) throw new WorkflowInputError("Run the capability preview before publishing this draft.");
     if (!this.testEvidence || !await this.testEvidence.hasVerifiedTestRun(draft.id, draft.version, user)) {
       throw new WorkflowInputError("Confirm one completed local test receipt before publishing this draft.");
+    }
+    try {
+      assertLegacyMvpWorkflowAllowed(draft, this.mvpPolicy);
+    } catch (error) {
+      if (error instanceof MvpPolicyError) throw new WorkflowInputError(error.message);
+      throw error;
     }
     const published = publishWorkflowDraft(draft, new Date().toISOString());
     if (!published.ok) throw new WorkflowInputError(published.errors.join(" "));

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "format": "doonce.mvp-pilot-charter.v1",
+  "status": "pending-founder-signoff",
+  "scope": {
+    "workflowCategory": "report-download",
+    "pilotOrigin": null,
+    "reportName": null,
+    "expectedOutcome": null,
+    "verificationRule": {
+      "kind": "file-downloaded",
+      "fileNamePattern": null,
+      "contentTypes": [],
+      "minimumBytes": null
+    },
+    "includedActions": [
+      "navigate",
+      "wait",
+      "read",
+      "compare",
+      "branch",
+      "download",
+      "stop"
+    ],
+    "excludedCapabilities": [
+      "text-authoring",
+      "video-authoring",
+      "automated-repair",
+      "hosted-execution",
+      "schedules",
+      "webhooks",
+      "multiple-origins"
+    ]
+  },
+  "pilots": [
+    {
+      "pilotId": null,
+      "organizationRole": null,
+      "taskRecurrence": null,
+      "baselineDurationSeconds": null,
+      "historicalErrorRatePercent": null
+    }
+  ],
+  "valueThreshold": {
+    "metric": "time-saved-per-run-seconds",
+    "minimum": null,
+    "proposedPilotPriceMinorUnits": null,
+    "currency": null
+  },
+  "signoff": {
+    "approvedBy": null,
+    "approvedAt": null,
+    "scopeChecksumSha256": null
+  }
+}

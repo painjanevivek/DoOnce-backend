@@ -21,6 +21,7 @@ import type { AuthoringJob, AuthoringService } from "../src/authoring/authoring-
 import type { RepairService } from "../src/repair/repair-service.js";
 import { BetaService, type BetaStore } from "../src/beta/beta-service.js";
 import type { BetaEnrollmentStatus, BetaSummary, BetaWorkflowEnrollment } from "../src/beta/beta-types.js";
+import { mvpPolicyFromEnvironment } from "../src/system/mvp-policy.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
@@ -39,10 +40,11 @@ class ServerAuthStore implements AuthStore {
 
   public constructor(private readonly role: MembershipRole = "owner") {}
 
-  public async register(input: Parameters<AuthStore["register"]>[0]): Promise<void> {
+  public async register(input: Parameters<AuthStore["register"]>[0]): Promise<{ role: MembershipRole }> {
     this.account = { userId: input.userId, email: input.email, passwordHash: input.passwordHash, defaultTenantId: input.tenantId };
     this.identity = { tenantId: input.tenantId, userId: input.userId };
     this.tokenHashes.add(input.sessionTokenHash);
+    return { role: this.role };
   }
 
   public async findAccountByEmail(): Promise<AccountRecord | undefined> { return this.account; }
@@ -71,6 +73,41 @@ class ServerBetaStore implements BetaStore {
 async function authenticatedApp() {
   return buildServer({ authService: new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes") });
 }
+
+test("reports the narrow MVP capability surface and rejects excluded APIs", async (t) => {
+  const mvpPolicy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
+  const app = await buildServer({ mvpPolicy });
+  t.after(async () => app.close());
+
+  const capabilities = await app.inject({ method: "GET", url: "/api/v1/system/capabilities" });
+  assert.equal(capabilities.statusCode, 200);
+  assert.deepEqual(capabilities.json().mvp, {
+    enabled: true,
+    pilotOrigin: "https://reports.example.test",
+    authoringModes: ["record"],
+    executionModes: ["attended-extension"],
+    outcome: "verified-report-download",
+  });
+
+  for (const url of ["/api/v1/authoring-jobs", "/api/v1/video-imports", "/api/v1/schedules", "/api/v1/webhook-endpoints"]) {
+    const response = await app.inject({ method: "POST", url, headers: { origin: "https://reports.example.test" }, payload: {} });
+    assert.equal(response.statusCode, 403, url);
+    assert.equal(response.json().code, "mvp.capability_disabled");
+  }
+});
+
+test("requires an invitation token in the MVP sign-up contract", async (t) => {
+  const mvpPolicy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
+  const authService = new AuthService(new ServerAuthStore(), "a-session-secret-that-is-longer-than-thirty-two-bytes", { invitationRequired: true });
+  const app = await buildServer({ mvpPolicy, authService });
+  t.after(async () => app.close());
+  const input = { email: "pilot@example.com", password: "not-a-real-password", tenantName: "Pilot" };
+
+  const missing = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "https://reports.example.test" }, payload: input });
+  assert.equal(missing.statusCode, 400);
+  const invalid = await app.inject({ method: "POST", url: "/api/v1/auth/sign-up", headers: { origin: "https://reports.example.test" }, payload: { ...input, invitationToken: "short" } });
+  assert.equal(invalid.statusCode, 400);
+});
 
 class ServerWorkflowStore implements WorkflowStore {
   private readonly drafts: WorkflowDraft[] = [];

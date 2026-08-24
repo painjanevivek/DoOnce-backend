@@ -1,3 +1,5 @@
+DROP FUNCTION IF EXISTS app.resolve_webhook_endpoint(uuid);
+
 CREATE OR REPLACE FUNCTION app.resolve_webhook_endpoint(endpoint_id uuid)
 RETURNS TABLE (
   id uuid, tenant_id uuid, workflow_id uuid, session_profile_id uuid,

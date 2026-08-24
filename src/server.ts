@@ -5,7 +5,7 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import Fastify, { type FastifyError, type FastifyRequest } from "fastify";
-import { AuthInputError, AuthService, EmailAlreadyRegisteredError } from "./auth/auth-service.js";
+import { AuthInputError, AuthService, EmailAlreadyRegisteredError, InvitationRejectedError } from "./auth/auth-service.js";
 import { WorkflowAccessError, WorkflowInputError, WorkflowService } from "./workflow/workflow-service.js";
 import { CanonicalWorkflowAccessError, CanonicalWorkflowInputError, CanonicalWorkflowService } from "./workflow/canonical-workflow-service.js";
 import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "./runner/postgres-run-receipt-store.js";
@@ -37,11 +37,19 @@ import { operationalMetrics } from "./observability/metrics.js";
 import { finishSpan, startSpan } from "./observability/tracing.js";
 import { registerBetaRoutes } from "./beta/beta-routes.js";
 import type { BetaService } from "./beta/beta-service.js";
+import { disabledMvpPolicy, type MvpPolicy } from "./system/mvp-policy.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
-function allowedOriginsFromEnvironment(): string[] {
+function allowedOriginsFromEnvironment(mvpPolicy: Readonly<MvpPolicy>): string[] {
   const configured = process.env.DOONCE_ALLOWED_ORIGINS;
+  if (mvpPolicy.enabled) {
+    const origins = configured ? configured.split(",").map((origin) => origin.trim()).filter(Boolean) : [mvpPolicy.pilotOrigin!];
+    if (origins.length !== 1 || origins[0] !== mvpPolicy.pilotOrigin) {
+      throw new Error("DOONCE_ALLOWED_ORIGINS must exactly match DOONCE_PILOT_ALLOWED_ORIGIN in MVP mode.");
+    }
+    return origins;
+  }
   if (!configured) return defaultAllowedOrigins;
   return configured.split(",").map((origin) => origin.trim()).filter(Boolean);
 }
@@ -68,6 +76,7 @@ export interface ServerOptions {
   videoService?: VideoService;
   readinessCheck?: () => Promise<void>;
   betaService?: BetaService;
+  mvpPolicy?: Readonly<MvpPolicy>;
 }
 
 const sessionCookieName = "doonce_session";
@@ -103,7 +112,8 @@ function videoError(error: unknown, reply: import("fastify").FastifyReply) {
 }
 
 export async function buildServer(options: ServerOptions = {}) {
-  const allowedOrigins = allowedOriginsFromEnvironment();
+  const mvpPolicy = options.mvpPolicy ?? disabledMvpPolicy;
+  const allowedOrigins = allowedOriginsFromEnvironment(mvpPolicy);
   const extensionOrigins = options.extensionOrigins ?? (process.env.DOONCE_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean);
   if (extensionOrigins.some((origin) => !/^chrome-extension:\/\/[a-p]{32}$/.test(origin))) {
     throw new Error("DOONCE_EXTENSION_ORIGINS must contain exact Chrome extension origins.");
@@ -127,6 +137,11 @@ export async function buildServer(options: ServerOptions = {}) {
   app.addHook("onRequest", async (request) => {
     requestStartedAt.set(request, performance.now());
     requestSpans.set(request, startSpan("http.request", { "http.request.method": request.method }));
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    if (mvpPolicy.enabled && isMvpDisabledRoute(request.url)) {
+      return reply.code(403).send({ error: "This capability is disabled for the attended MVP pilot.", code: "mvp.capability_disabled" });
+    }
   });
   app.addHook("onResponse", async (request, reply) => {
     const route = request.routeOptions.url ?? "unmatched";
@@ -234,6 +249,13 @@ export async function buildServer(options: ServerOptions = {}) {
     paused: ["unknown"],
     workflowChangesEnabled: operationalControls.workflowChangesEnabled,
     killSwitchActive: operationalControls.killSwitchActive,
+    mvp: {
+      enabled: mvpPolicy.enabled,
+      pilotOrigin: mvpPolicy.pilotOrigin ?? null,
+      authoringModes: mvpPolicy.enabled ? ["record"] : ["record", "text", "video"],
+      executionModes: mvpPolicy.enabled ? ["attended-extension"] : ["attended-extension", "hosted", "schedule", "webhook"],
+      outcome: mvpPolicy.enabled ? "verified-report-download" : null,
+    },
   });
 
   app.get("/api/v1/system/capabilities", async () => capabilitiesSummary());
@@ -393,17 +415,18 @@ export async function buildServer(options: ServerOptions = {}) {
     return { ...decision, ruleId: decision.ruleId.replace(/^capability\./, "policy.") };
   });
 
-  app.post<{ Body: { email?: unknown; password?: unknown; tenantName?: unknown } }>("/api/v1/auth/sign-up", {
+  app.post<{ Body: { email?: unknown; password?: unknown; tenantName?: unknown; invitationToken?: unknown } }>("/api/v1/auth/sign-up", {
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     schema: {
       body: {
         type: "object",
-        required: ["email", "password", "tenantName"],
+        required: mvpPolicy.enabled ? ["email", "password", "tenantName", "invitationToken"] : ["email", "password", "tenantName"],
         additionalProperties: false,
         properties: {
           email: { type: "string", maxLength: 320 },
           password: { type: "string", minLength: 12, maxLength: 128 },
           tenantName: { type: "string", minLength: 1, maxLength: 120 },
+          invitationToken: { type: "string", minLength: 43, maxLength: 43, pattern: "^[a-zA-Z0-9_-]+$" },
         },
       },
     },
@@ -417,6 +440,7 @@ export async function buildServer(options: ServerOptions = {}) {
       return reply.code(201).send({ user: session.user });
     } catch (error) {
       if (error instanceof EmailAlreadyRegisteredError) return reply.code(409).send({ error: "Unable to create account." });
+      if (error instanceof InvitationRejectedError) return reply.code(400).send({ error: "Invitation is invalid, expired, already used, or belongs to another email.", code: "auth.invitation_rejected" });
       if (error instanceof AuthInputError) return reply.code(400).send({ error: error.message });
       throw error;
     }
@@ -1440,6 +1464,19 @@ function setSessionCookie(reply: { setCookie(name: string, value: string, option
 
 function hasAllowedOrigin(origin: string | undefined, allowedOrigins: readonly string[]): boolean {
   return typeof origin === "string" && allowedOrigins.includes(origin);
+}
+
+function isMvpDisabledRoute(rawUrl: string): boolean {
+  const path = rawUrl.split("?", 1)[0] ?? rawUrl;
+  return [
+    "/api/v1/authoring-jobs",
+    "/api/v1/video-imports",
+    "/api/v1/repair-proposals",
+    "/api/v1/browser-session-profiles",
+    "/api/v1/schedules",
+    "/api/v1/webhook-endpoints",
+    "/api/v1/webhooks",
+  ].some((prefix) => path === prefix || path.startsWith(`${prefix}/`)) || /^\/api\/v1\/workflows\/[^/]+\/repair-draft$/.test(path);
 }
 
 function constantTimeToken(header: string | undefined, expected: string): boolean {

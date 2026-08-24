@@ -4,6 +4,7 @@ import type { AuthenticatedUser } from "../src/auth/auth-service.js";
 import type { WorkflowCompilation, WorkflowSpec } from "../src/contracts/protocol.js";
 import { CanonicalWorkflowAccessError, CanonicalWorkflowInputError, CanonicalWorkflowService, type CanonicalDraftMutationResult, type CanonicalNextDraftResult, type CanonicalPublishResult, type CanonicalWorkflowDraft, type CanonicalWorkflowStore, type CanonicalWorkflowSummary, type CanonicalWorkflowVersion } from "../src/workflow/canonical-workflow-service.js";
 import { validProtocolFixtures } from "./fixtures/protocol-v1.js";
+import { mvpPolicyFromEnvironment } from "../src/system/mvp-policy.js";
 
 class MemoryCanonicalStore implements CanonicalWorkflowStore {
   public draft?: CanonicalWorkflowDraft;
@@ -55,6 +56,28 @@ test("requires passing test evidence for the exact saved draft checksum", async 
   await assert.rejects(() => service.publishDraft(owner, draft.id, draft.checksum), /exact saved draft/);
   store.tested = true;
   assert.equal((await service.publishDraft(owner, draft.id, draft.checksum)).status, "published");
+});
+
+test("rechecks the exact report-download boundary before MVP publication", async () => {
+  const policy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
+  const verifiedWorkflow: WorkflowSpec = {
+    ...workflow,
+    successCriteria: [{ id: "f0c4d3b2-9f6e-4a1d-b2c3-8a7d6e5f4a3b", name: "Report exists", kind: "file-downloaded", minBytes: 1 }],
+  };
+  const allowedStore = new MemoryCanonicalStore();
+  const allowed = new CanonicalWorkflowService(allowedStore, policy);
+  const draft = await allowed.createDraft(owner, verifiedWorkflow);
+  assert.equal((await allowed.publishDraft(owner, draft.id, draft.checksum)).status, "published");
+
+  const deniedStore = new MemoryCanonicalStore();
+  const denied = new CanonicalWorkflowService(deniedStore, policy);
+  const otherOriginWorkflow = structuredClone(verifiedWorkflow);
+  otherOriginWorkflow.allowedDomains = ["other.example.test"];
+  for (const step of otherOriginWorkflow.steps) {
+    if ("target" in step && "domain" in step.target) step.target.domain = "other.example.test";
+  }
+  const deniedDraft = await denied.createDraft(owner, otherOriginWorkflow);
+  await assert.rejects(() => denied.publishDraft(owner, deniedDraft.id, deniedDraft.checksum), /configured pilot origin/);
 });
 
 test("allows only workflow authors to create canonical drafts", async () => {

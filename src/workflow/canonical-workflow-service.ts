@@ -5,6 +5,7 @@ import type { WorkflowCompilation, WorkflowSpec } from "../contracts/protocol.js
 import { formatValidationIssues, validateProtocolContract, type ValidationIssue } from "../contracts/validation.js";
 import { isCaptureCompilerVersionCompatible } from "../compiler/capture-workflow-compiler.js";
 import { evaluateActionCapabilities } from "../execution/action-capabilities.js";
+import { assertMvpWorkflowAllowed, disabledMvpPolicy, MvpPolicyError, type MvpPolicy } from "../system/mvp-policy.js";
 
 export interface CanonicalWorkflowDraft {
   id: string;
@@ -67,7 +68,10 @@ export class CanonicalWorkflowInputError extends Error {
 export class CanonicalWorkflowAccessError extends Error {}
 
 export class CanonicalWorkflowService {
-  public constructor(private readonly store: CanonicalWorkflowStore) {}
+  public constructor(
+    private readonly store: CanonicalWorkflowStore,
+    private readonly mvpPolicy: Readonly<MvpPolicy> = disabledMvpPolicy,
+  ) {}
 
   public async createDraft(user: AuthenticatedUser, input: unknown, metadata?: CanonicalWorkflowDraftMetadata): Promise<CanonicalWorkflowDraft> {
     requireAuthor(user.role);
@@ -120,6 +124,12 @@ export class CanonicalWorkflowService {
     const validation = validateProtocolContract<WorkflowSpec>("WorkflowSpec", draft.spec);
     if (!validation.ok) throw new CanonicalWorkflowInputError("Invalid workflows cannot be published.", validation.errors);
     if (!draft.testEvidenceVerified) throw new CanonicalWorkflowInputError("Run this exact saved draft successfully in test mode before publishing.");
+    try {
+      assertMvpWorkflowAllowed(validation.value, this.mvpPolicy);
+    } catch (error) {
+      if (error instanceof MvpPolicyError) throw new CanonicalWorkflowInputError(error.message);
+      throw error;
+    }
     const result = await this.store.publishDraft(user, workflowId, expectedChecksum);
     return result.status === "published" ? { ...result, version: { ...result.version, spec: immutableSpec(result.version.spec) } } : result;
   }

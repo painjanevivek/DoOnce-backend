@@ -8,20 +8,48 @@ const roleValues = new Set<MembershipRole>(["owner", "builder", "runner", "revie
 export class PostgresAuthStore implements AuthStore {
   public constructor(private readonly pool: Pool) {}
 
-  public async register(input: Parameters<AuthStore["register"]>[0]): Promise<void> {
+  public async register(input: Parameters<AuthStore["register"]>[0]): Promise<{ role: MembershipRole } | undefined> {
     const client = await this.pool.connect();
     try {
-      await withTenantTransaction(client, input, async (transaction) => {
+      return await withTenantTransaction(client, input, async (transaction) => {
+        let role: MembershipRole = "owner";
+        let invitationId: string | undefined;
+        if (input.invitationTokenHash) {
+          await transaction.query("SELECT set_config('app.invitation_token_hash', $1, true)", [input.invitationTokenHash]);
+          const invitation = (await transaction.query<{ id: string; email: string; role: string }>(
+            `SELECT id, email, role FROM signup_invitations
+             WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+             FOR UPDATE`,
+            [input.invitationTokenHash],
+          )).rows[0];
+          if (!invitation || invitation.email !== input.email || !roleValues.has(invitation.role as MembershipRole)) return undefined;
+          invitationId = invitation.id;
+          role = invitation.role as MembershipRole;
+        }
         await transaction.query("INSERT INTO tenants (id, name) VALUES ($1, $2)", [input.tenantId, input.tenantName]);
         await transaction.query(
           "INSERT INTO users (id, email, password_hash, default_tenant_id) VALUES ($1, $2, $3, $4)",
           [input.userId, input.email, input.passwordHash, input.tenantId],
         );
-        await transaction.query("INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, 'owner')", [input.tenantId, input.userId]);
+        await transaction.query("INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, $3)", [input.tenantId, input.userId, role]);
         await transaction.query(
           "INSERT INTO sessions (tenant_id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)",
           [input.tenantId, input.userId, input.sessionTokenHash, input.sessionExpiresAt],
         );
+        if (invitationId) {
+          const consumed = await transaction.query(
+            `UPDATE signup_invitations SET consumed_at = now(), consumed_by = $2, tenant_id = $3, updated_at = now()
+             WHERE id = $1 AND consumed_at IS NULL RETURNING id`,
+            [invitationId, input.userId, input.tenantId],
+          );
+          if (consumed.rows.length !== 1) throw new Error("Invitation consumption lost its transaction lock.");
+          await transaction.query(
+            `INSERT INTO signup_invitation_audit_events (id, invitation_id, event_type, actor, user_id)
+             VALUES (gen_random_uuid(), $1, 'consumed', $2, $3)`,
+            [invitationId, input.email, input.userId],
+          );
+        }
+        return { role };
       });
     } finally {
       client.release();

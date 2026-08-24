@@ -18,7 +18,7 @@ export interface SqlClient {
 export async function readMigrations(directory: string): Promise<Migration[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const names = entries
-    .filter((entry) => entry.isFile() && /^\d{3}_[a-z0-9-]+\.sql$/i.test(entry.name))
+    .filter((entry) => entry.isFile() && /^\d{3}_[a-z0-9_-]+\.sql$/i.test(entry.name))
     .map((entry) => entry.name)
     .sort();
 

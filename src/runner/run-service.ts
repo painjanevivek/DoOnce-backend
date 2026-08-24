@@ -7,6 +7,7 @@ import { ExecutionRoutingError, routeExecution, type SessionLocation, type Trigg
 import { operationalMetrics } from "../observability/metrics.js";
 import { productAnalytics } from "../observability/product-analytics.js";
 import { HostedQualificationError, HostedQualificationRegistry, type HostedQualificationPolicy } from "../hosted/hosted-qualification.js";
+import { assertMvpWorkflowAllowed, disabledMvpPolicy, MvpPolicyError, type MvpPolicy } from "../system/mvp-policy.js";
 
 export type RunStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
@@ -75,6 +76,7 @@ export class RunService {
     private readonly leaseMs = 45_000,
     private readonly dispatcher?: RunDispatcher,
     private readonly hostedQualifications: HostedQualificationPolicy = new HostedQualificationRegistry([]),
+    private readonly mvpPolicy: Readonly<MvpPolicy> = disabledMvpPolicy,
   ) {
     if (!Number.isInteger(leaseMs) || leaseMs < 10_000 || leaseMs > 300_000) throw new Error("Run lease must be between 10 seconds and 5 minutes.");
   }
@@ -84,6 +86,15 @@ export class RunService {
     const parsed = parseCreateInput(input);
     const executable = await this.store.findExecutable(user, parsed.workflowId, parsed.mode);
     if (!executable) throw new RunInputError(parsed.mode === "test" ? "An editable workflow draft is required before starting a test run." : "A published workflow version is required before starting a run.");
+    try {
+      assertMvpWorkflowAllowed(executable.spec, this.mvpPolicy);
+    } catch (error) {
+      if (error instanceof MvpPolicyError) throw new RunInputError(error.message);
+      throw error;
+    }
+    if (this.mvpPolicy.enabled && (parsed.triggerKind !== "manual" || parsed.sessionLocation !== "user-browser" || parsed.sessionProfileId)) {
+      throw new RunInputError("MVP runs require an attended local Chrome session and a manual trigger.");
+    }
     const inputs = resolveInputs(executable.spec, parsed.inputs);
     let route;
     try {
@@ -133,6 +144,7 @@ export class RunService {
   }
 
   public async claimHosted(user: AuthenticatedUser, runId: string, executorVersion: string): Promise<ClaimedRun | undefined> {
+    if (this.mvpPolicy.enabled) throw new RunInputError("Hosted execution is disabled in MVP mode.");
     if (!this.store.claimHosted) throw new Error("Hosted execution is not configured.");
     if (!/^\d+\.\d+\.\d+$/.test(executorVersion)) throw new RunInputError("Hosted executor version is invalid.");
     const leaseToken = randomBytes(32).toString("base64url");

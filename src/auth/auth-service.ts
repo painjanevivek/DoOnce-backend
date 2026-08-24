@@ -25,7 +25,8 @@ export interface AuthStore {
     passwordHash: string;
     sessionTokenHash: string;
     sessionExpiresAt: Date;
-  }): Promise<void>;
+    invitationTokenHash?: string;
+  }): Promise<{ role: MembershipRole } | undefined>;
   findAccountByEmail(email: string): Promise<AccountRecord | undefined>;
   findAccountByIdentity(identity: SessionIdentity): Promise<AccountRecord | undefined>;
   findRole(identity: SessionIdentity): Promise<MembershipRole | undefined>;
@@ -36,43 +37,57 @@ export interface AuthStore {
 
 export class AuthInputError extends Error {}
 export class EmailAlreadyRegisteredError extends Error {}
+export class InvitationRejectedError extends Error {}
+
+export interface AuthServiceOptions {
+  sessionLifetimeMs?: number;
+  invitationRequired?: boolean;
+}
 
 // Keep password derivation work consistent when an email has no account.
 const timingSafePasswordHash = "scrypt$AAAAAAAAAAAAAAAAAAAAAA$a2FeeCuNRftgLaVKtBhJOzVe8dkMB42q3F3gym78p0Ju8mNMHJlsE6x_1apNcyEl4wQg3kyKlHnmYRpoElQjCw";
 
 export class AuthService {
+  private readonly sessionLifetimeMs: number;
+  private readonly invitationRequired: boolean;
+
   public constructor(
     private readonly store: AuthStore,
     private readonly sessionSecret: string,
-    private readonly sessionLifetimeMs = 1000 * 60 * 60 * 24 * 14,
+    options: number | AuthServiceOptions = {},
   ) {
     if (Buffer.byteLength(sessionSecret) < 32) throw new Error("SESSION_SECRET must be at least 32 bytes.");
+    this.sessionLifetimeMs = typeof options === "number" ? options : options.sessionLifetimeMs ?? 1000 * 60 * 60 * 24 * 14;
+    this.invitationRequired = typeof options === "number" ? false : options.invitationRequired === true;
+    if (!Number.isInteger(this.sessionLifetimeMs) || this.sessionLifetimeMs < 60_000) throw new Error("Session lifetime must be at least one minute.");
   }
 
-  public async signUp(input: { email?: unknown; password?: unknown; tenantName?: unknown }): Promise<{ token: string; user: AuthenticatedUser }> {
+  public async signUp(input: { email?: unknown; password?: unknown; tenantName?: unknown; invitationToken?: unknown }): Promise<{ token: string; user: AuthenticatedUser }> {
     const email = validateEmail(input.email);
     const password = validatePassword(input.password);
     const tenantName = validateTenantName(input.tenantName);
+    const invitationTokenHash = validateInvitationToken(input.invitationToken, this.invitationRequired);
     const identity = { tenantId: randomUUID(), userId: randomUUID() };
     const token = createSessionToken(identity, this.sessionSecret);
     const passwordHash = await hashPassword(password);
     const expiresAt = this.sessionExpiry();
 
     try {
-      await this.store.register({
+      const registration = await this.store.register({
         ...identity,
         tenantName,
         email,
         passwordHash,
         sessionTokenHash: hashToken(token),
         sessionExpiresAt: expiresAt,
+        ...(invitationTokenHash ? { invitationTokenHash } : {}),
       });
+      if (!registration) throw new InvitationRejectedError("Invitation is invalid or unavailable.");
+      return { token, user: { ...identity, email, role: registration.role } };
     } catch (error) {
       if (hasDatabaseUniqueViolation(error)) throw new EmailAlreadyRegisteredError("Email is already registered.");
       throw error;
     }
-
-    return { token, user: { ...identity, email, role: "owner" } };
   }
 
   public async signIn(input: { email?: unknown; password?: unknown }): Promise<{ token: string; user: AuthenticatedUser } | undefined> {
@@ -142,6 +157,14 @@ function validateTenantName(value: unknown): string {
   const tenantName = value.trim();
   if (tenantName.length < 1 || tenantName.length > 120) throw new AuthInputError("Workspace name must be 1 to 120 characters.");
   return tenantName;
+}
+
+function validateInvitationToken(value: unknown, required: boolean): string | undefined {
+  if (value === undefined && !required) return undefined;
+  if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{43}$/.test(value)) {
+    throw new InvitationRejectedError("Invitation is invalid or unavailable.");
+  }
+  return hashToken(value);
 }
 
 function hasDatabaseUniqueViolation(error: unknown): boolean {

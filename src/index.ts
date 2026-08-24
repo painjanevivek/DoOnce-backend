@@ -41,9 +41,11 @@ import { VideoService } from "./video/video-service.js";
 import { BetaService } from "./beta/beta-service.js";
 import { PostgresBetaStore } from "./beta/postgres-beta-store.js";
 import { HostedQualificationRegistry, parseHostedQualifications } from "./hosted/hosted-qualification.js";
+import { mvpPolicyFromEnvironment } from "./system/mvp-policy.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
+const mvpPolicy = mvpPolicyFromEnvironment();
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("PORT must be an integer between 1 and 65535.");
@@ -56,27 +58,27 @@ if (databaseUrl && !sessionSecret) throw new Error("SESSION_SECRET is required w
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefined;
 if (pool) await assertRuntimeDatabaseRole(pool);
 const runReceiptStore = pool && sessionSecret ? new PostgresRunReceiptStore(pool) : undefined;
-const canonicalWorkflowService = pool ? new CanonicalWorkflowService(new PostgresCanonicalWorkflowStore(pool)) : undefined;
+const canonicalWorkflowService = pool ? new CanonicalWorkflowService(new PostgresCanonicalWorkflowStore(pool), mvpPolicy) : undefined;
 const captureService = pool ? new CaptureService(new PostgresCaptureStore(pool)) : undefined;
 const captureCompilationService = captureService && canonicalWorkflowService ? new CaptureCompilationService(captureService, new CaptureWorkflowCompiler(), canonicalWorkflowService) : undefined;
 const jobDatabaseUrl = process.env.JOB_DATABASE_URL;
-const jobQueue = jobDatabaseUrl ? new PgBossJobQueue(jobDatabaseUrl, (error) => console.error(JSON.stringify({ eventCode: "queue.connection_error", errorCode: error.name }))) : undefined;
+const jobQueue = jobDatabaseUrl && !mvpPolicy.enabled ? new PgBossJobQueue(jobDatabaseUrl, (error) => console.error(JSON.stringify({ eventCode: "queue.connection_error", errorCode: error.name }))) : undefined;
 if (jobQueue) await jobQueue.start();
 const runStore = pool ? new PostgresRunStore(pool) : undefined;
 const hostedQualifications = new HostedQualificationRegistry(parseHostedQualifications(process.env.HOSTED_QUALIFICATIONS_JSON));
-const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined, hostedQualifications) : undefined;
-const scheduleStore = pool ? new PostgresScheduleStore(pool) : undefined;
+const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined, hostedQualifications, mvpPolicy) : undefined;
+const scheduleStore = pool && !mvpPolicy.enabled ? new PostgresScheduleStore(pool) : undefined;
 const scheduleService = scheduleStore ? new ScheduleService(scheduleStore) : undefined;
-const sessionProfileStore = pool ? new PostgresSessionProfileStore(pool) : undefined;
+const sessionProfileStore = pool && !mvpPolicy.enabled ? new PostgresSessionProfileStore(pool) : undefined;
 const sessionProfileService = sessionProfileStore ? new SessionProfileService(sessionProfileStore) : undefined;
 const secretProvider = new EnvironmentSecretProvider();
-const webhookService = pool && runService ? new WebhookService(new PostgresWebhookStore(pool), secretProvider, runService) : undefined;
+const webhookService = pool && runService && !mvpPolicy.enabled ? new WebhookService(new PostgresWebhookStore(pool), secretProvider, runService) : undefined;
 const artifactStoragePath = process.env.ARTIFACT_STORAGE_PATH;
 const artifactSigningSecret = process.env.ARTIFACT_SIGNING_SECRET ?? sessionSecret;
 const artifactService = pool && artifactStoragePath && artifactSigningSecret ? new ArtifactService(new PostgresArtifactMetadataStore(pool), new FileSystemObjectStore(artifactStoragePath), artifactSigningSecret) : undefined;
-const authoringService = pool && canonicalWorkflowService && process.env.TEXT_AUTHORING_ENABLED === "true" ? new AuthoringService(new PostgresAuthoringJobStore(pool), new TemplateAuthoringProvider(), canonicalWorkflowService) : undefined;
+const authoringService = pool && canonicalWorkflowService && !mvpPolicy.enabled && process.env.TEXT_AUTHORING_ENABLED === "true" ? new AuthoringService(new PostgresAuthoringJobStore(pool), new TemplateAuthoringProvider(), canonicalWorkflowService) : undefined;
 const videoStoragePath = process.env.VIDEO_STORAGE_PATH;
-const videoService = pool && canonicalWorkflowService && videoStoragePath && process.env.VIDEO_AUTHORING_ENABLED === "true"
+const videoService = pool && canonicalWorkflowService && videoStoragePath && !mvpPolicy.enabled && process.env.VIDEO_AUTHORING_ENABLED === "true"
   ? new VideoService(
     new PostgresVideoImportStore(pool),
     new FileSystemVideoStore(videoStoragePath),
@@ -90,11 +92,11 @@ const durableWorkers = jobQueue && runService && scheduleService && sessionProfi
   ? new DurableWorkers(jobQueue, runService, scheduleService, sessionProfileStore, new PlaywrightExecutor(secretProvider), authoringService, artifactService, videoService)
   : undefined;
 if (durableWorkers) await durableWorkers.start();
-const repairService = pool && process.env.REPAIR_ENABLED === "true" ? new RepairService(new PostgresRepairStore(pool)) : undefined;
+const repairService = pool && !mvpPolicy.enabled && process.env.REPAIR_ENABLED === "true" ? new RepairService(new PostgresRepairStore(pool)) : undefined;
 const betaService = pool ? new BetaService(new PostgresBetaStore(pool)) : undefined;
 const app = await buildServer({
-  ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret) } : {}),
-  ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore) } : {}),
+  ...(pool && sessionSecret ? { authService: new AuthService(new PostgresAuthStore(pool), sessionSecret, { invitationRequired: mvpPolicy.enabled }) } : {}),
+  ...(pool && runReceiptStore ? { workflowService: new WorkflowService(new PostgresWorkflowStore(pool), runReceiptStore, mvpPolicy) } : {}),
   ...(canonicalWorkflowService ? { canonicalWorkflowService } : {}),
   ...(captureService ? { captureService } : {}),
   ...(captureCompilationService ? { captureCompilationService } : {}),
@@ -110,6 +112,7 @@ const app = await buildServer({
   ...(webhookService ? { webhookService } : {}),
   ...(videoService ? { videoService } : {}),
   ...(betaService ? { betaService } : {}),
+  mvpPolicy,
   readinessCheck: async () => { await pool?.query("SELECT 1"); if (jobQueue) await jobQueue.health(); },
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
