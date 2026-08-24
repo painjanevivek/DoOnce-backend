@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "environment": "pilot-production",
+  "providerDecision": "PENDING_FOUNDER_GATE_B",
+  "topology": {
+    "frontend": "one immutable HTTPS deployment",
+    "api": "one immutable HTTPS deployment; no worker process",
+    "database": "managed PostgreSQL with encrypted backups and point-in-time recovery",
+    "artifacts": "encrypted persistent volume or object-store adapter",
+    "secrets": "provider secret manager",
+    "observability": "private metrics scrape, OTLP traces, and tested alert delivery"
+  },
+  "requiredDecisions": [
+    "provider/project and budget ceiling",
+    "frontend and API hostnames plus DNS owner",
+    "final Chrome extension ID and publisher",
+    "primary and backup operations owners",
+    "backup retention and approved recovery objectives",
+    "alert delivery destinations"
+  ],
+  "failClosedDefaults": {
+    "hostedExecution": false,
+    "workers": false,
+    "schedules": false,
+    "webhooks": false,
+    "textAuthoring": false,
+    "videoAuthoring": false,
+    "automaticRepair": false,
+    "invitationCreationInApi": false
+  }
+}

@@ -37,23 +37,25 @@ import { operationalMetrics } from "./observability/metrics.js";
 import { finishSpan, startSpan } from "./observability/tracing.js";
 import { registerBetaRoutes } from "./beta/beta-routes.js";
 import type { BetaService } from "./beta/beta-service.js";
-import { disabledMvpPolicy, type MvpPolicy } from "./system/mvp-policy.js";
+import { disabledMvpPolicy, isExactPublicHttpsOrigin, type MvpPolicy } from "./system/mvp-policy.js";
 import type { RunResult } from "./contracts/protocol.js";
 import { validateProtocolContract } from "./contracts/validation.js";
+import type { ReleaseIdentity } from "./release/release-identity.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
-function allowedOriginsFromEnvironment(mvpPolicy: Readonly<MvpPolicy>): string[] {
-  const configured = process.env.DOONCE_ALLOWED_ORIGINS;
+export function allowedOriginsFromEnvironment(mvpPolicy: Readonly<MvpPolicy>, environment: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = environment.DOONCE_ALLOWED_ORIGINS;
   if (mvpPolicy.enabled) {
+    if (!configured && environment.NODE_ENV === "production") throw new Error("DOONCE_ALLOWED_ORIGINS must contain the exact HTTPS dashboard origin in production MVP mode.");
     const origins = configured ? configured.split(",").map((origin) => origin.trim()).filter(Boolean) : [mvpPolicy.pilotOrigin!];
-    if (origins.length !== 1 || origins[0] !== mvpPolicy.pilotOrigin) {
-      throw new Error("DOONCE_ALLOWED_ORIGINS must exactly match DOONCE_PILOT_ALLOWED_ORIGIN in MVP mode.");
-    }
+    if (origins.length !== 1 || !isExactPublicHttpsOrigin(origins[0]!)) throw new Error("DOONCE_ALLOWED_ORIGINS must contain one exact public HTTPS dashboard origin in MVP mode.");
     return origins;
   }
   if (!configured) return defaultAllowedOrigins;
-  return configured.split(",").map((origin) => origin.trim()).filter(Boolean);
+  const origins = configured.split(",").map((origin) => origin.trim()).filter(Boolean);
+  if (environment.NODE_ENV === "production" && origins.some((origin) => !isExactPublicHttpsOrigin(origin))) throw new Error("Production dashboard origins must be exact public HTTPS origins.");
+  return origins;
 }
 
 export interface ServerOptions {
@@ -79,6 +81,7 @@ export interface ServerOptions {
   readinessCheck?: () => Promise<void>;
   betaService?: BetaService;
   mvpPolicy?: Readonly<MvpPolicy>;
+  releaseIdentity?: ReleaseIdentity;
 }
 
 const sessionCookieName = "doonce_session";
@@ -119,6 +122,10 @@ export async function buildServer(options: ServerOptions = {}) {
   const extensionOrigins = options.extensionOrigins ?? (process.env.DOONCE_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean);
   if (extensionOrigins.some((origin) => !/^chrome-extension:\/\/[a-p]{32}$/.test(origin))) {
     throw new Error("DOONCE_EXTENSION_ORIGINS must contain exact Chrome extension origins.");
+  }
+  if (process.env.NODE_ENV === "production" && mvpPolicy.enabled) {
+    const expectedExtensionOrigin = options.releaseIdentity ? `chrome-extension://${options.releaseIdentity.extensionId}` : undefined;
+    if (!expectedExtensionOrigin || extensionOrigins.length !== 1 || extensionOrigins[0] !== expectedExtensionOrigin) throw new Error("Production MVP mode requires the one release-bound Chrome extension origin.");
   }
   const browserOrigins = [...allowedOrigins, ...extensionOrigins];
   const operationalControls = options.operationalControls ?? operationalControlsFromEnvironment();
@@ -188,7 +195,7 @@ export async function buildServer(options: ServerOptions = {}) {
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["content-type", "authorization", "upload-offset"],
+    allowedHeaders: ["content-type", "authorization", "upload-offset", "x-doonce-extension-version"],
     exposedHeaders: ["upload-offset"],
   });
   await app.register(cookie);
@@ -220,10 +227,11 @@ export async function buildServer(options: ServerOptions = {}) {
     mutationOriginAllowed: (origin) => hasAllowedOrigin(origin, allowedOrigins),
   });
 
-  app.get("/health", async () => ({ status: "ok", service: "doonce-api" }));
+  const release = options.releaseIdentity ?? null;
+  app.get("/health", async () => ({ status: "ok", service: "doonce-api", release }));
   app.get("/ready", async (_request, reply) => {
-    try { await options.readinessCheck?.(); return { status: "ready", service: "doonce-api" }; }
-    catch { return reply.code(503).send({ status: "unavailable", service: "doonce-api" }); }
+    try { await options.readinessCheck?.(); return { status: "ready", service: "doonce-api", release }; }
+    catch { return reply.code(503).send({ status: "unavailable", service: "doonce-api", release }); }
   });
 
   app.get("/internal/metrics", async (request, reply) => {
@@ -251,6 +259,7 @@ export async function buildServer(options: ServerOptions = {}) {
     paused: ["unknown"],
     workflowChangesEnabled: operationalControls.workflowChangesEnabled,
     killSwitchActive: operationalControls.killSwitchActive,
+    release,
     mvp: {
       enabled: mvpPolicy.enabled,
       pilotOrigin: mvpPolicy.pilotOrigin ?? null,

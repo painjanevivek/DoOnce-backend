@@ -3,6 +3,7 @@ import type { AuthenticatedUser } from "../auth/auth-service.js";
 import type { ExecutorKind, RunRequest, RunResult, StepResult, WorkflowSpec } from "../contracts/protocol.js";
 import type { SqlClient } from "../database/migrator.js";
 import { withTenantTransaction, type TenantContext } from "../database/tenant-context.js";
+import type { ReleaseIdentity } from "../release/release-identity.js";
 import { RunApprovalRejectedError, type ExecutionRun, type PublishedWorkflow, type RunApprovalRecord, type RunCheckpoint, type RunCreationMetadata, type RunStore, type RunTimeline, type RunTimelineArtifact, type RunTimelineEvent } from "./run-service.js";
 
 interface RunRow extends Record<string, unknown> {
@@ -14,6 +15,7 @@ interface RunRow extends Record<string, unknown> {
   trigger_kind: ExecutionRun["triggerKind"];
   session_profile_id: string | null;
   queue_job_id: string | null;
+  release_identity: ReleaseIdentity | Record<string, never>;
 }
 
 export class PostgresRunStore implements RunStore {
@@ -70,15 +72,15 @@ export class PostgresRunStore implements RunStore {
         approvedExtensionVersion = row.extension_version;
       }
       const result = await db.query<RunRow>(
-        `INSERT INTO workflow_runs (id, tenant_id, requested_by, workflow_id, workflow_version, workflow_checksum, mode, executor, trigger_kind, session_profile_id, inputs, workflow_definition, idempotency_key, request_digest, requested_at, approval_challenge_id, approved_extension_version)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17
+        `INSERT INTO workflow_runs (id, tenant_id, requested_by, workflow_id, workflow_version, workflow_checksum, mode, executor, trigger_kind, session_profile_id, inputs, workflow_definition, idempotency_key, request_digest, requested_at, approval_challenge_id, approved_extension_version, release_identity)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17, $18::jsonb
          WHERE $10::uuid IS NULL OR EXISTS (
            SELECT 1 FROM browser_session_profiles
            WHERE id = $10 AND tenant_id = $2 AND created_by = $3 AND location = 'managed' AND enabled = true
          )
          ON CONFLICT (tenant_id, requested_by, idempotency_key) DO NOTHING
          RETURNING *`,
-        [request.runId, user.tenantId, user.userId, request.workflowId, request.workflowVersion, workflow.checksum, workflow.status === "draft" ? "test" : "production", request.executor, metadata.triggerKind, metadata.sessionProfileId ?? null, JSON.stringify(request.inputs), JSON.stringify(workflow.spec), idempotencyKey, requestDigest, request.requestedAt, approvalId, approvedExtensionVersion],
+        [request.runId, user.tenantId, user.userId, request.workflowId, request.workflowVersion, workflow.checksum, workflow.status === "draft" ? "test" : "production", request.executor, metadata.triggerKind, metadata.sessionProfileId ?? null, JSON.stringify(request.inputs), JSON.stringify(workflow.spec), idempotencyKey, requestDigest, request.requestedAt, approvalId, approvedExtensionVersion, JSON.stringify(metadata.releaseIdentity ?? {})],
       );
       const inserted = result.rows[0];
       if (inserted) {
@@ -236,6 +238,7 @@ function mapRun(row: RunRow): ExecutionRun {
     ...(row.session_profile_id ? { sessionProfileId: row.session_profile_id } : {}),
     ...(row.queue_job_id ? { queueJobId: row.queue_job_id } : {}),
     ...(row.result ? { result: row.result } : {}),
+    ...(row.release_identity && Object.keys(row.release_identity).length > 0 ? { releaseIdentity: row.release_identity as ReleaseIdentity } : {}),
   };
 }
 

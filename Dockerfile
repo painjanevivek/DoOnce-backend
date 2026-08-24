@@ -7,7 +7,7 @@ COPY . ./
 RUN npm run build
 RUN npm prune --omit=dev
 
-FROM node:24.19.0-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runner
+FROM node:24.19.0-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runtime
 
 WORKDIR /app
 RUN apk upgrade --no-cache \
@@ -29,4 +29,10 @@ COPY --from=build /app/dist ./dist
 EXPOSE 4000
 VOLUME ["/var/lib/doonce"]
 USER node
+
+FROM runtime AS migrator
+COPY --from=build /app/database/migrations ./database/migrations
+CMD ["node", "dist/database/migrate.js"]
+
+FROM runtime AS runner
 CMD ["node", "dist/index.js"]

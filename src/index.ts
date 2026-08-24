@@ -43,11 +43,16 @@ import { PostgresBetaStore } from "./beta/postgres-beta-store.js";
 import { HostedQualificationRegistry, parseHostedQualifications } from "./hosted/hosted-qualification.js";
 import { mvpPolicyFromEnvironment } from "./system/mvp-policy.js";
 import { operationalControlsFromEnvironment } from "./system/operational-controls.js";
+import { releaseIdentityFromEnvironment } from "./release/release-identity.js";
+import { assertAppliedMigrationSet } from "./database/migration-readiness.js";
+import { assertProductionMvpEnvironment } from "./system/deployment-policy.js";
 
 const port = Number.parseInt(process.env.PORT ?? "4000", 10);
 const host = process.env.HOST ?? "127.0.0.1";
 const mvpPolicy = mvpPolicyFromEnvironment();
 const operationalControls = operationalControlsFromEnvironment();
+assertProductionMvpEnvironment();
+const releaseIdentity = releaseIdentityFromEnvironment();
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("PORT must be an integer between 1 and 65535.");
@@ -58,7 +63,10 @@ const sessionSecret = process.env.SESSION_SECRET;
 if (databaseUrl && !sessionSecret) throw new Error("SESSION_SECRET is required when DATABASE_URL is configured.");
 
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : undefined;
-if (pool) await assertRuntimeDatabaseRole(pool);
+if (pool) {
+  await assertRuntimeDatabaseRole(pool);
+  if (releaseIdentity) await assertAppliedMigrationSet(pool, releaseIdentity.migrationSetSha256);
+}
 const runReceiptStore = pool && sessionSecret ? new PostgresRunReceiptStore(pool) : undefined;
 const canonicalWorkflowService = pool ? new CanonicalWorkflowService(new PostgresCanonicalWorkflowStore(pool), mvpPolicy) : undefined;
 const captureService = pool ? new CaptureService(new PostgresCaptureStore(pool), mvpPolicy) : undefined;
@@ -68,7 +76,7 @@ const jobQueue = jobDatabaseUrl && !mvpPolicy.enabled ? new PgBossJobQueue(jobDa
 if (jobQueue) await jobQueue.start();
 const runStore = pool ? new PostgresRunStore(pool) : undefined;
 const hostedQualifications = new HostedQualificationRegistry(parseHostedQualifications(process.env.HOSTED_QUALIFICATIONS_JSON));
-const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined, hostedQualifications, mvpPolicy, operationalControls) : undefined;
+const runService = runStore ? new RunService(runStore, 45_000, jobQueue ? new QueuedRunDispatcher(jobQueue) : undefined, hostedQualifications, mvpPolicy, operationalControls, releaseIdentity) : undefined;
 const scheduleStore = pool && !mvpPolicy.enabled ? new PostgresScheduleStore(pool) : undefined;
 const scheduleService = scheduleStore ? new ScheduleService(scheduleStore) : undefined;
 const sessionProfileStore = pool && !mvpPolicy.enabled ? new PostgresSessionProfileStore(pool) : undefined;
@@ -116,7 +124,8 @@ const app = await buildServer({
   ...(betaService ? { betaService } : {}),
   mvpPolicy,
   operationalControls,
-  readinessCheck: async () => { await pool?.query("SELECT 1"); if (jobQueue) await jobQueue.health(); },
+  ...(releaseIdentity ? { releaseIdentity } : {}),
+  readinessCheck: async () => { await pool?.query("SELECT 1"); if (pool && releaseIdentity) await assertAppliedMigrationSet(pool, releaseIdentity.migrationSetSha256); if (jobQueue) await jobQueue.health(); },
   ...(pool && sessionSecret ? { supportReportStore: new PostgresSupportReportStore(pool) } : {}),
 });
 if (jobQueue || pool || telemetrySdk) app.addHook("onClose", async () => {

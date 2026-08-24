@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildServer } from "../src/server.js";
+import { allowedOriginsFromEnvironment, buildServer } from "../src/server.js";
 import { AuthService, type AccountRecord, type AuthenticatedUser, type AuthStore, type MembershipRole } from "../src/auth/auth-service.js";
 import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "../src/runner/postgres-run-receipt-store.js";
 import type { RunReceipt } from "../src/runner/run-receipt.js";
@@ -22,6 +22,7 @@ import type { RepairService } from "../src/repair/repair-service.js";
 import { BetaService, type BetaStore } from "../src/beta/beta-service.js";
 import type { BetaEnrollmentStatus, BetaSummary, BetaWorkflowEnrollment } from "../src/beta/beta-types.js";
 import { mvpPolicyFromEnvironment } from "../src/system/mvp-policy.js";
+import type { ReleaseIdentity } from "../src/release/release-identity.js";
 
 const workflowCreatePayload = {
   title: safeReportWorkflowFixture.title,
@@ -94,6 +95,34 @@ test("reports the narrow MVP capability surface and rejects excluded APIs", asyn
     assert.equal(response.statusCode, 403, url);
     assert.equal(response.json().code, "mvp.capability_disabled");
   }
+});
+
+test("separates the dashboard CORS origin from the automated pilot site", () => {
+  const mvpPolicy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: "https://reports.example.test" });
+  assert.deepEqual(allowedOriginsFromEnvironment(mvpPolicy, { NODE_ENV: "production", DOONCE_ALLOWED_ORIGINS: "https://app.example.test" }), ["https://app.example.test"]);
+  assert.throws(() => allowedOriginsFromEnvironment(mvpPolicy, { NODE_ENV: "production" }), /dashboard origin/);
+  assert.throws(() => allowedOriginsFromEnvironment(mvpPolicy, { NODE_ENV: "production", DOONCE_ALLOWED_ORIGINS: "https://app.example.test,https://second.example.test" }), /one exact/);
+});
+
+test("exposes immutable release identity in health and capability diagnostics", async (t) => {
+  const releaseIdentity: ReleaseIdentity = {
+    schemaVersion: 1,
+    deploymentId: "mvp-2026-08-24.1",
+    environment: "pilot-production",
+    backendCommit: "a".repeat(40),
+    frontendCommit: "b".repeat(40),
+    backendImageDigest: `sha256:${"c".repeat(64)}`,
+    frontendImageDigest: `sha256:${"d".repeat(64)}`,
+    extensionId: "a".repeat(32),
+    extensionVersion: "0.4.0",
+    extensionPackageSha256: "e".repeat(64),
+    protocolSchemaSha256: "f".repeat(64),
+    migrationSetSha256: "1".repeat(64),
+  };
+  const app = await buildServer({ releaseIdentity });
+  t.after(async () => app.close());
+  assert.deepEqual((await app.inject({ method: "GET", url: "/health" })).json().release, releaseIdentity);
+  assert.deepEqual((await app.inject({ method: "GET", url: "/api/v1/system/capabilities" })).json().release, releaseIdentity);
 });
 
 test("requires an invitation token in the MVP sign-up contract", async (t) => {

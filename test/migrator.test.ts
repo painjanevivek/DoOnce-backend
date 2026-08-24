@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { applyMigrations, createMigration, readMigrations, type SqlClient } from "../src/database/migrator.js";
+import { applyMigrations, createMigration, migrationSetSha256, readMigrations, type SqlClient } from "../src/database/migrator.js";
+import { assertAppliedMigrationSet } from "../src/database/migration-readiness.js";
 
 class FakeSqlClient implements SqlClient {
   readonly calls: { sql: string; values?: readonly unknown[] }[] = [];
@@ -56,6 +57,19 @@ test("rolls back all pending migrations when one fails", async () => {
 
 test("discovers both hyphenated and underscored migration names", async () => {
   const migrations = await readMigrations(path.join(process.cwd(), "database", "migrations"));
-  assert.equal(migrations.length, 24);
+  assert.equal(migrations.length, 25);
   assert.ok(migrations.some(({ id }) => id === "024_attended_run_authorization.sql"));
+  assert.ok(migrations.some(({ id }) => id === "025_run_release_identity.sql"));
+});
+
+test("computes a platform-stable migration-set checksum and verifies the applied set", async () => {
+  const first = createMigration("001_first.sql", "SELECT 1\r\n");
+  const second = createMigration("002_second.sql", "SELECT 2\n");
+  assert.equal(first.checksum, createMigration(first.id, "SELECT 1\n").checksum);
+  const expected = migrationSetSha256([first, second]);
+  const client = {
+    query: async () => ({ rows: [{ id: second.id, checksum: second.checksum }, { id: first.id, checksum: first.checksum }] }),
+  } satisfies SqlClient;
+  await assertAppliedMigrationSet(client, expected);
+  await assert.rejects(() => assertAppliedMigrationSet(client, "0".repeat(64)), /does not match/);
 });

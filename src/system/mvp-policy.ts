@@ -101,6 +101,15 @@ function requirePublicHttpsOrigin(value: string | undefined): string {
   return url.origin;
 }
 
+export function isExactPublicHttpsOrigin(value: string): boolean {
+  try {
+    requirePublicHttpsOrigin(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isPublicHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized.endsWith(".local")) return false;

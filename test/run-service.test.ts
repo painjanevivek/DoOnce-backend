@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuthenticatedUser } from "../src/auth/auth-service.js";
 import type { RunRequest, RunResult, WorkflowSpec } from "../src/contracts/protocol.js";
-import { RunApprovalRejectedError, RunConflictError, RunInputError, RunService, type ExecutionRun, type PublishedWorkflow, type RunApprovalRecord, type RunCheckpoint, type RunStore } from "../src/runner/run-service.js";
+import { RunApprovalRejectedError, RunConflictError, RunInputError, RunService, type ExecutionRun, type PublishedWorkflow, type RunApprovalRecord, type RunCheckpoint, type RunCreationMetadata, type RunStore } from "../src/runner/run-service.js";
 import { HostedQualificationRegistry, parseHostedQualifications } from "../src/hosted/hosted-qualification.js";
-import { mvpPolicyFromEnvironment } from "../src/system/mvp-policy.js";
+import { disabledMvpPolicy, mvpPolicyFromEnvironment } from "../src/system/mvp-policy.js";
 
 const user: AuthenticatedUser = { tenantId: "11111111-1111-4111-8111-111111111111", userId: "22222222-2222-4222-8222-222222222222", email: "runner@example.test", role: "runner" };
 const workflowId = "33333333-3333-4333-8333-333333333333";
@@ -24,17 +24,18 @@ class MemoryRunStore implements RunStore {
   public leaseHash = "";
   public cancelled = false;
   public approval: (RunApprovalRecord & { used: boolean }) | undefined;
+  public metadata: RunCreationMetadata | undefined;
 
   public async findExecutable(): Promise<PublishedWorkflow | undefined> { return this.published; }
   public async createApproval(_user: AuthenticatedUser, approval: RunApprovalRecord): Promise<void> { this.approval = { ...approval, used: false }; }
-  public async create(_user: AuthenticatedUser, request: RunRequest, executable: PublishedWorkflow, idempotencyKey: string, requestDigest: string, _metadata?: unknown, approval?: { tokenHash: string; inputDigest: string }) {
+  public async create(_user: AuthenticatedUser, request: RunRequest, executable: PublishedWorkflow, idempotencyKey: string, requestDigest: string, metadata?: RunCreationMetadata, approval?: { tokenHash: string; inputDigest: string }) {
     if (this.run && idempotencyKey === this.idempotencyKey) return { created: false, run: this.run, requestDigest: this.requestDigest };
     if (approval) {
       if (!this.approval || this.approval.used || Date.parse(this.approval.expiresAt) <= Date.now() || this.approval.tokenHash !== approval.tokenHash || this.approval.inputDigest !== approval.inputDigest || this.approval.workflowVersion !== executable.version || this.approval.workflowChecksum !== executable.checksum) throw new RunApprovalRejectedError();
       this.approval.used = true;
     }
-    this.request = request; this.requestDigest = requestDigest; this.idempotencyKey = idempotencyKey;
-    this.run = { id: request.runId, workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: executable.status === "draft" ? "test" : "production", status: "queued", executor: "extension", requestedAt: request.requestedAt, cancelRequested: false, currentStepIndex: 0, stepResults: [] };
+    this.request = request; this.requestDigest = requestDigest; this.idempotencyKey = idempotencyKey; this.metadata = metadata;
+    this.run = { id: request.runId, workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: executable.status === "draft" ? "test" : "production", status: "queued", executor: "extension", triggerKind: metadata?.triggerKind ?? "manual", requestedAt: request.requestedAt, cancelRequested: false, currentStepIndex: 0, stepResults: [], ...(metadata?.releaseIdentity ? { releaseIdentity: metadata.releaseIdentity } : {}) };
     return { created: true, run: this.run, requestDigest };
   }
   public async list(): Promise<ExecutionRun[]> { return this.run ? [this.run] : []; }
@@ -108,6 +109,17 @@ test("requires an exact expiring qualification before managed execution", async 
   }]));
   const created = await new RunService(store, 45_000, undefined, new HostedQualificationRegistry(qualifications)).create(user, input);
   assert.equal(created.created, true);
+});
+
+test("binds an immutable deployment identity to the created run receipt", async () => {
+  const store = new MemoryRunStore();
+  const releaseIdentity = {
+    schemaVersion: 1 as const, deploymentId: "mvp-1", environment: "pilot-production", backendCommit: "a".repeat(40), frontendCommit: "b".repeat(40), backendImageDigest: `sha256:${"c".repeat(64)}`, frontendImageDigest: `sha256:${"d".repeat(64)}`, extensionId: "a".repeat(32), extensionVersion: "0.4.0", extensionPackageSha256: "e".repeat(64), protocolSchemaSha256: "f".repeat(64), migrationSetSha256: "1".repeat(64),
+  };
+  const service = new RunService(store, 45_000, undefined, new HostedQualificationRegistry([]), disabledMvpPolicy, { workflowChangesEnabled: true, killSwitchActive: false }, releaseIdentity);
+  const created = await service.create(user, { workflowId, inputs: { region: "north" }, idempotencyKey: "release-bound" });
+  assert.deepEqual(created.run.releaseIdentity, releaseIdentity);
+  assert.deepEqual(store.metadata?.releaseIdentity, releaseIdentity);
 });
 
 test("allows only manual attended runs for the exact MVP report origin", async () => {

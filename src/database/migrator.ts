@@ -63,6 +63,14 @@ export function createMigration(id: string, sql: string): Migration {
   return {
     id,
     sql,
-    checksum: createHash("sha256").update(sql).digest("hex"),
+    checksum: createHash("sha256").update(sql.replace(/\r\n/g, "\n")).digest("hex"),
   };
+}
+
+export function migrationSetSha256(migrations: ReadonlyArray<Pick<Migration, "id" | "checksum">>): string {
+  const canonical = [...migrations]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(({ id, checksum }) => `${id}:${checksum}`)
+    .join("\n");
+  return createHash("sha256").update(`${canonical}\n`).digest("hex");
 }

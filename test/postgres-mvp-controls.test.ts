@@ -31,6 +31,9 @@ test("persists consent under RLS and consumes one bound approval atomically", { 
     successCriteria: [{ id: assertionId, name: "Report exists", kind: "file-downloaded", fileNamePattern: "report-*.csv", minBytes: 1, maxBytes: 10_000_000 }],
   };
   const user: AuthenticatedUser = { tenantId, userId, email: `runner-${userId}@example.test`, role: "runner" };
+  const releaseIdentity = {
+    schemaVersion: 1 as const, deploymentId: "mvp-postgres-proof", environment: "integration", backendCommit: "a".repeat(40), frontendCommit: "b".repeat(40), backendImageDigest: `sha256:${"c".repeat(64)}`, frontendImageDigest: `sha256:${"d".repeat(64)}`, extensionId: "a".repeat(32), extensionVersion: "0.4.0", extensionPackageSha256: "e".repeat(64), protocolSchemaSha256: "f".repeat(64), migrationSetSha256: "1".repeat(64),
+  };
 
   try {
     await admin.query("INSERT INTO tenants (id, name) VALUES ($1, 'Phase 2 integration')", [tenantId]);
@@ -46,7 +49,7 @@ test("persists consent under RLS and consumes one bound approval atomically", { 
     assert.equal(consent.rows[0]?.revoked_at, null);
 
     const policy = mvpPolicyFromEnvironment({ DOONCE_MVP_MODE: "true", DOONCE_PILOT_ALLOWED_ORIGIN: origin });
-    const runs = new RunService(new PostgresRunStore(runtime), 45_000, undefined, undefined, policy);
+    const runs = new RunService(new PostgresRunStore(runtime), 45_000, undefined, undefined, policy, { workflowChangesEnabled: true, killSwitchActive: false }, releaseIdentity);
     const approval = await runs.approve(user, { workflowId, inputs: {}, extensionVersion: "0.4.0" });
     const attempts = await Promise.allSettled([
       runs.create(user, { workflowId, inputs: {}, idempotencyKey: `race:${randomUUID()}`, approvalToken: approval.approvalToken }),
@@ -61,6 +64,8 @@ test("persists consent under RLS and consumes one bound approval atomically", { 
     assert.ok(approvalRow.rows[0]?.consumed_at);
     assert.ok(approvalRow.rows[0]?.run_id);
     assert.equal(approvalRow.rows[0]?.extension_version, "0.4.0");
+    const runRow = await admin.query<{ release_identity: typeof releaseIdentity }>("SELECT release_identity FROM workflow_runs WHERE id = $1", [approvalRow.rows[0]!.run_id]);
+    assert.deepEqual(runRow.rows[0]?.release_identity, releaseIdentity);
   } finally {
     await admin.query("DELETE FROM tenants WHERE id = $1", [tenantId]).catch(() => undefined);
     await admin.query("DELETE FROM users WHERE id = $1", [userId]).catch(() => undefined);

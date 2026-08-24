@@ -5,6 +5,7 @@ This directory is the operator-facing source of truth for deploying and supporti
 ## Before a release
 
 1. Complete the checks in [deployment.md](deployment.md), including migration compatibility and image rollback.
+   The attended pilot uses the stricter [MVP production deployment runbook](mvp-production-deployment.md).
 2. Review every variable in [environment.md](environment.md); secrets must come from the deployment secret manager.
 3. Confirm [dashboards and alerts](dashboards-and-alerts.md) are receiving fresh data.
 4. Run the [reliability drills](reliability-drills.md), including a restore into an isolated database.

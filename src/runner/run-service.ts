@@ -9,6 +9,7 @@ import { productAnalytics } from "../observability/product-analytics.js";
 import { HostedQualificationError, HostedQualificationRegistry, type HostedQualificationPolicy } from "../hosted/hosted-qualification.js";
 import { assertMvpWorkflowAllowed, disabledMvpPolicy, MvpPolicyError, type MvpPolicy } from "../system/mvp-policy.js";
 import type { OperationalControls } from "../system/operational-controls.js";
+import type { ReleaseIdentity } from "../release/release-identity.js";
 
 export type RunStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
@@ -32,6 +33,7 @@ export interface ExecutionRun {
   extensionVersion?: string;
   leaseExpiresAt?: string;
   result?: RunResult;
+  releaseIdentity?: ReleaseIdentity;
 }
 
 export interface PublishedWorkflow { workflowId: string; version: number; checksum: string; status: "draft" | "active"; spec: WorkflowSpec }
@@ -73,6 +75,7 @@ export interface RunCreationMetadata {
   triggerKind: TriggerKind;
   sessionLocation: SessionLocation;
   sessionProfileId?: string;
+  releaseIdentity?: ReleaseIdentity;
 }
 
 export interface RunDispatcher {
@@ -93,6 +96,7 @@ export class RunService {
     private readonly hostedQualifications: HostedQualificationPolicy = new HostedQualificationRegistry([]),
     private readonly mvpPolicy: Readonly<MvpPolicy> = disabledMvpPolicy,
     private readonly operationalControls: Readonly<OperationalControls> = { workflowChangesEnabled: true, killSwitchActive: false },
+    private readonly releaseIdentity?: ReleaseIdentity,
   ) {
     if (!Number.isInteger(leaseMs) || leaseMs < 10_000 || leaseMs > 300_000) throw new Error("Run lease must be between 10 seconds and 5 minutes.");
   }
@@ -133,6 +137,7 @@ export class RunService {
       triggerKind: route.triggerKind,
       sessionLocation: route.sessionLocation,
       ...(parsed.sessionProfileId ? { sessionProfileId: parsed.sessionProfileId } : {}),
+      ...(this.releaseIdentity ? { releaseIdentity: this.releaseIdentity } : {}),
     };
     const requestDigest = digest({ workflowId: request.workflowId, workflowVersion: request.workflowVersion, workflowChecksum: executable.checksum, mode: parsed.mode, executor: request.executor, triggerKind: route.triggerKind, sessionProfileId: parsed.sessionProfileId, inputs });
     if (this.mvpPolicy.enabled && parsed.mode === "production" && !parsed.approvalToken) throw new RunInputError("A fresh run approval is required.");
