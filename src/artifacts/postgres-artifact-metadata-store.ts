@@ -27,7 +27,11 @@ export class PostgresArtifactMetadataStore implements ArtifactMetadataStore {
     return map(row);
   }); }
   public listForRun(user: AuthenticatedUser, runId: string): Promise<ArtifactMetadata[]> { return this.withUser(user, async (db) => (await db.query<ArtifactRow>("SELECT artifacts.* FROM workflow_artifacts artifacts JOIN workflow_runs runs ON runs.id = artifacts.run_id WHERE artifacts.run_id = $1 AND runs.requested_by = app.current_user_id() ORDER BY artifacts.created_at, artifacts.id LIMIT 500", [runId])).rows.map(map)); }
-  public find(user: AuthenticatedUser, artifactId: string): Promise<ArtifactMetadata | undefined> { return this.withUser(user, async (db) => { const row = (await db.query<ArtifactRow>("SELECT artifacts.* FROM workflow_artifacts artifacts JOIN workflow_runs runs ON runs.id = artifacts.run_id WHERE artifacts.id = $1 AND runs.requested_by = app.current_user_id()", [artifactId])).rows[0]; return row ? map(row) : undefined; }); }
+  public find(user: AuthenticatedUser, artifactId: string): Promise<ArtifactMetadata | undefined> { return this.withUser(user, async (db) => { const row = (await db.query<ArtifactRow>(`SELECT artifacts.*
+      FROM workflow_artifacts artifacts
+      JOIN workflow_runs runs ON runs.id = artifacts.run_id
+      JOIN memberships memberships ON memberships.tenant_id = artifacts.tenant_id AND memberships.user_id = app.current_user_id()
+      WHERE artifacts.id = $1 AND runs.requested_by = app.current_user_id()`, [artifactId])).rows[0]; return row ? map(row) : undefined; }); }
   public listExpired(user: AuthenticatedUser, now: string, limit: number): Promise<ArtifactMetadata[]> { return this.withUser(user, async (db) => (await db.query<ArtifactRow>("SELECT * FROM workflow_artifacts WHERE expires_at <= $1 AND pinned_at IS NULL ORDER BY expires_at LIMIT $2", [now, limit])).rows.map(map)); }
   public delete(user: AuthenticatedUser, artifactId: string): Promise<boolean> { return this.withUser(user, async (db) => (await db.query<{ id: string }>("DELETE FROM workflow_artifacts WHERE id = $1 RETURNING id", [artifactId])).rows.length === 1); }
   private async withUser<T>(user: AuthenticatedUser, work: (db: import("../database/migrator.js").SqlClient) => Promise<T>): Promise<T> { const client = await this.pool.connect(); try { return await withTenantTransaction(client, user, work); } finally { client.release(); } }

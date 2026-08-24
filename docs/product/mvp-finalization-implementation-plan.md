@@ -200,9 +200,9 @@ Tasks:
 
 **Expected effort:** 2–4 engineering days after provider/DNS access is available.
 
-### Phase 5 — close every external security gate
+### Phase 5 — close the repository security gates
 
-**Objective:** convert release-blocker claims into evidence for the exact release candidate.
+**Objective:** convert release-blocker claims into repository-owned regression and CI evidence for the exact release candidate. Only the commands and retained artifacts defined in this phase are MVP release gates.
 
 Create a focused allow/deny matrix and retain raw test/scan evidence for:
 
@@ -212,12 +212,12 @@ Create a focused allow/deny matrix and retain raw test/scan evidence for:
 4. Extension/API boundary: production HTTPS only, exact `chrome-extension://<id>` origin, valid pairing/lease credentials, rejected website-origin calls, and rejected prior extension IDs after rotation.
 5. Action/data policy: sensitive fields excluded; unknown/sensitive/irreversible actions pause or reject; no user-entered values in telemetry, logs, analytics, receipts, artifacts, or support reports.
 6. Per-run approval: fresh, user-visible, single-use, short-lived, bound, and non-replayable for every attended production run.
-7. Supply chain: dependency audit, extension package scan, container scan, SBOMs, pinned base images/actions, secrets scan, and reviewed security diff for both repositories.
+7. Supply chain: dependency audit, extension package scan, container scan, SBOMs, pinned base images/actions, tracked-secret scan, and reviewed source diff for both repositories.
 8. Consent lifecycle: permission revocation removes only the selected origin's local captures, approvals, recording state, and receipts, while server retention follows the approved policy.
 
 Any high finding blocks the affected external capability. There is no waiver; disable the capability or fix and rerun the evidence.
 
-**Exit gate:** every cluster in `docs/security/release-blockers.md` has a passing regression reference bound to the release commits/package checksum, and the release manifest reports `ready: true` except for pilot evidence.
+**Exit gate:** every cluster in `docs/security/release-blockers.md` has a passing repository regression reference bound to the release commits/package checksum, the raw CI artifacts are retained, and the release manifest reports `ready: true` except for pilot evidence.
 
 **Expected effort:** 2–4 engineering days if no high finding requires redesign.
 

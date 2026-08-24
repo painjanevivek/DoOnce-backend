@@ -57,9 +57,10 @@ test("rolls back all pending migrations when one fails", async () => {
 
 test("discovers both hyphenated and underscored migration names", async () => {
   const migrations = await readMigrations(path.join(process.cwd(), "database", "migrations"));
-  assert.equal(migrations.length, 25);
+  assert.equal(migrations.length, 26);
   assert.ok(migrations.some(({ id }) => id === "024_attended_run_authorization.sql"));
   assert.ok(migrations.some(({ id }) => id === "025_run_release_identity.sql"));
+  assert.ok(migrations.some(({ id }) => id === "026_capture_runtime_grants.sql"));
 });
 
 test("computes a platform-stable migration-set checksum and verifies the applied set", async () => {

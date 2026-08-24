@@ -44,6 +44,10 @@ import type { ReleaseIdentity } from "./release/release-identity.js";
 
 const defaultAllowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
 
+export function requestLogSerializer(request: { method?: unknown }): { method: string } {
+  return { method: typeof request.method === "string" ? request.method : "UNKNOWN" };
+}
+
 export function allowedOriginsFromEnvironment(mvpPolicy: Readonly<MvpPolicy>, environment: NodeJS.ProcessEnv = process.env): string[] {
   const configured = environment.DOONCE_ALLOWED_ORIGINS;
   if (mvpPolicy.enabled) {
@@ -139,6 +143,7 @@ export async function buildServer(options: ServerOptions = {}) {
     },
     logger: {
       redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"],
+      serializers: { req: requestLogSerializer },
     },
     trustProxy: false,
   });
@@ -211,7 +216,7 @@ export async function buildServer(options: ServerOptions = {}) {
         name: error.name,
         code: error.code,
         statusCode: error.statusCode,
-        stack: error.stack?.split(/\r?\n/).slice(1).join("\n"),
+        ...(process.env.NODE_ENV === "production" ? {} : { stack: error.stack?.split(/\r?\n/).slice(1).join("\n") }),
       },
     }, "Unhandled API error");
     if (error.validation) return reply.code(400).send({ error: "Invalid request." });

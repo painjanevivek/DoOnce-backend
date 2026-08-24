@@ -147,22 +147,39 @@ export class PostgresCaptureStore implements CaptureStore {
   }
 
   public async findExtensionIdentity(tokenHash: string, extensionVersion?: string): Promise<AuthenticatedUser | undefined> {
-    const result = await this.pool.query<{ tenant_id: string; user_id: string; role: AuthenticatedUser["role"]; email: string }>(
-      `WITH touched AS (
-         UPDATE capture_extension_tokens
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const token = (await client.query<{ tenant_id: string; user_id: string }>(
+        `UPDATE capture_extension_tokens
          SET last_seen_at = now(), extension_version = COALESCE(extension_version, $2)
          WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
            AND ($2::text IS NULL OR extension_version IS NULL OR extension_version = $2)
-         RETURNING tenant_id, user_id
-       )
-       SELECT touched.tenant_id, touched.user_id, memberships.role, users.email
-       FROM touched
-       JOIN memberships ON memberships.tenant_id = touched.tenant_id AND memberships.user_id = touched.user_id
-       JOIN users ON users.id = touched.user_id`,
-      [tokenHash, extensionVersion ?? null],
-    );
-    const identity = result.rows[0];
-    return identity ? { tenantId: identity.tenant_id, userId: identity.user_id, role: identity.role, email: identity.email } : undefined;
+         RETURNING tenant_id, user_id`,
+        [tokenHash, extensionVersion ?? null],
+      )).rows[0];
+      if (!token) { await client.query("ROLLBACK"); return undefined; }
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [token.tenant_id]);
+      await client.query("SELECT set_config('app.user_id', $1, true)", [token.user_id]);
+      const identity = (await client.query<{ role: AuthenticatedUser["role"]; email: string }>(
+        `SELECT memberships.role, users.email
+         FROM memberships
+         JOIN users ON users.id = memberships.user_id
+         WHERE memberships.tenant_id = $1 AND memberships.user_id = $2
+         FOR KEY SHARE OF memberships, users`,
+        [token.tenant_id, token.user_id],
+      )).rows[0];
+      if (!identity) {
+        await client.query("UPDATE capture_extension_tokens SET revoked_at = now() WHERE token_hash = $1", [tokenHash]);
+        await client.query("COMMIT");
+        return undefined;
+      }
+      await client.query("COMMIT");
+      return { tenantId: token.tenant_id, userId: token.user_id, role: identity.role, email: identity.email };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
 
   public async revokeExtensionToken(tokenHash: string): Promise<boolean> {

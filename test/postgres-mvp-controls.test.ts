@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { Pool } from "pg";
 import type { AuthenticatedUser } from "../src/auth/auth-service.js";
+import { PostgresArtifactMetadataStore } from "../src/artifacts/postgres-artifact-metadata-store.js";
 import { PostgresCaptureStore } from "../src/capture/postgres-capture-store.js";
 import type { WorkflowSpec } from "../src/contracts/protocol.js";
 import { PostgresRunStore } from "../src/runner/postgres-run-store.js";
@@ -36,6 +37,8 @@ test("persists consent under RLS and consumes one bound approval atomically", { 
   };
 
   try {
+    const privileges = await runtime.query<{ can_pair: boolean; can_sync: boolean; can_authenticate: boolean }>("SELECT has_table_privilege(current_user, 'capture_pairing_codes', 'SELECT,INSERT,UPDATE,DELETE') AS can_pair, has_table_privilege(current_user, 'capture_sessions', 'SELECT,INSERT,UPDATE') AS can_sync, has_table_privilege(current_user, 'capture_extension_tokens', 'SELECT,INSERT,UPDATE') AS can_authenticate");
+    assert.deepEqual(privileges.rows[0], { can_pair: true, can_sync: true, can_authenticate: true });
     await admin.query("INSERT INTO tenants (id, name) VALUES ($1, 'Phase 2 integration')", [tenantId]);
     await admin.query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, 'not-a-real-password')", [userId, user.email]);
     await admin.query("INSERT INTO memberships (tenant_id, user_id, role) VALUES ($1, $2, 'runner')", [tenantId, userId]);
@@ -66,6 +69,19 @@ test("persists consent under RLS and consumes one bound approval atomically", { 
     assert.equal(approvalRow.rows[0]?.extension_version, "0.4.0");
     const runRow = await admin.query<{ release_identity: typeof releaseIdentity }>("SELECT release_identity FROM workflow_runs WHERE id = $1", [approvalRow.rows[0]!.run_id]);
     assert.deepEqual(runRow.rows[0]?.release_identity, releaseIdentity);
+
+    const artifactId = randomUUID();
+    const extensionTokenHash = "9".repeat(64);
+    await admin.query("INSERT INTO workflow_artifacts (id, tenant_id, run_id, retention_class, file_name, content_type, byte_size, checksum_sha256, storage_key) VALUES ($1, $2, $3, 'workflow-output', 'report.csv', 'text/csv', 8, $4, $5)", [artifactId, tenantId, approvalRow.rows[0]!.run_id, "8".repeat(64), `${tenantId}/${artifactId}`]);
+    await admin.query("INSERT INTO capture_extension_tokens (tenant_id, user_id, token_hash, extension_version) VALUES ($1, $2, $3, '0.4.0')", [tenantId, userId, extensionTokenHash]);
+
+    const artifacts = new PostgresArtifactMetadataStore(runtime);
+    assert.equal((await artifacts.find(user, artifactId))?.id, artifactId);
+    assert.equal((await captures.findExtensionIdentity(extensionTokenHash, "0.4.0"))?.userId, userId);
+
+    await admin.query("DELETE FROM memberships WHERE tenant_id = $1 AND user_id = $2", [tenantId, userId]);
+    assert.equal(await artifacts.find(user, artifactId), undefined);
+    assert.equal(await captures.findExtensionIdentity(extensionTokenHash, "0.4.0"), undefined);
   } finally {
     await admin.query("DELETE FROM tenants WHERE id = $1", [tenantId]).catch(() => undefined);
     await admin.query("DELETE FROM users WHERE id = $1", [userId]).catch(() => undefined);

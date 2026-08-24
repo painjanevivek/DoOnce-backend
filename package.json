@@ -25,6 +25,9 @@
     "expansion:check": "tsx scripts/check-expansion-proposal.ts",
     "invite:create": "tsx scripts/create-invitation.ts",
     "governance:verify": "tsx scripts/verify-capability-baseline.ts",
+    "secrets:scan": "node scripts/scan-tracked-secrets.mjs",
+    "security:verify": "node scripts/run-security-regressions.mjs",
+    "test:postgres-security": "tsx --test test/postgres-mvp-controls.test.ts",
     "test": "tsx --test test/action-policy.test.ts test/capture-service.test.ts test/capture-compilation-service.test.ts test/capture-workflow-compiler.test.ts test/canonical-workflow-service.test.ts test/protocol-contracts.test.ts test/workflow-schema.test.ts test/workflow-spec.test.ts test/workflow-migration.test.ts test/workflow-versioning.test.ts test/workflow-service.test.ts test/migrator.test.ts test/tenant-context.test.ts test/auth-service.test.ts test/mvp-policy.test.ts test/deployment-policy.test.ts test/release-identity.test.ts test/server.test.ts test/run-state-machine.test.ts test/run-guardrails.test.ts test/run-receipt.test.ts test/run-service.test.ts test/postgres-run-store.test.ts test/postgres-run-receipt-store.test.ts test/postgres-workflow-store.test.ts test/postgres-canonical-workflow-store.test.ts test/postgres-capture-store.test.ts test/runtime-role.test.ts"
   },
   "dependencies": {

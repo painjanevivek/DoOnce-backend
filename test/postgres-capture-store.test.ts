@@ -126,3 +126,25 @@ test("enforces total action and origin bounds across synchronization batches", a
   const newOrigin = { ...base, cursor: 0, actions: [{ ...base.actions[0]!, sequence: 1, origin: "https://new-origin.example.test" }] };
   await assert.rejects(() => originStore.syncBatch(user, newOrigin), /20 browser origins/);
 });
+
+test("authenticates an extension only after locking its current membership", async () => {
+  const queries: string[] = [];
+  const store = new PostgresCaptureStore({
+    connect: async () => ({
+      query: async (sql: string) => {
+        queries.push(sql);
+        if (sql.startsWith("UPDATE capture_extension_tokens\n         SET last_seen_at")) return { rows: [{ tenant_id: user.tenantId, user_id: user.userId }] };
+        if (sql.startsWith("SELECT memberships.role")) return { rows: [{ role: user.role, email: "owner@example.test" }] };
+        return { rows: [] };
+      },
+      release: () => undefined,
+    }),
+  } as unknown as Pool);
+
+  const identity = await store.findExtensionIdentity("a".repeat(64), "0.4.0");
+
+  assert.equal(identity?.userId, user.userId);
+  assert.ok(queries.some((sql) => sql.includes("set_config('app.tenant_id'")));
+  assert.ok(queries.some((sql) => sql.includes("FOR KEY SHARE OF memberships, users")));
+  assert.equal(queries.at(-1), "COMMIT");
+});

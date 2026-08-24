@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowedOriginsFromEnvironment, buildServer } from "../src/server.js";
+import { allowedOriginsFromEnvironment, buildServer, requestLogSerializer } from "../src/server.js";
 import { AuthService, type AccountRecord, type AuthenticatedUser, type AuthStore, type MembershipRole } from "../src/auth/auth-service.js";
 import { ReceiptAlreadyImportedError, type LocalDemoReceiptImport, type LocalDemoReceiptStore } from "../src/runner/postgres-run-receipt-store.js";
 import type { RunReceipt } from "../src/runner/run-receipt.js";
@@ -342,6 +342,12 @@ test("health endpoint sends explicit browser security headers", async (t) => {
   assert.equal(response.headers["x-content-type-options"], "nosniff");
   assert.equal(response.headers["x-frame-options"], "DENY");
   assert.equal(response.headers["referrer-policy"], "strict-origin-when-cross-origin");
+});
+
+test("request logs retain the method but exclude URLs, queries, headers, and payloads", () => {
+  const serialized = requestLogSerializer({ method: "POST", url: "/api/v1/workflows?token=user-entered", headers: { authorization: "Bearer secret" }, body: { value: "private" } } as { method: string });
+  assert.deepEqual(serialized, { method: "POST" });
+  assert.doesNotMatch(JSON.stringify(serialized), /token|secret|private|workflows/);
 });
 
 test("exposes generated OpenAPI only in development", async (t) => {

@@ -40,3 +40,18 @@ test("binds publication artifacts to a leased verified download step", async () 
   assert.match(insert ?? "", /declared_step->>'action' = 'download'/);
   assert.match(insert ?? "", /executor_leases leases/);
 });
+
+test("rechecks current membership before resolving an artifact or signed download grant", async () => {
+  const queries: string[] = [];
+  const pool = { connect: async () => ({
+    query: async (sql: string) => { queries.push(sql); return { rows: [] }; },
+    release() {},
+  }) } as unknown as Pool;
+
+  assert.equal(await new PostgresArtifactMetadataStore(pool).find(user, artifact.id), undefined);
+
+  const select = queries.find((sql) => sql.includes("FROM workflow_artifacts artifacts"));
+  assert.match(select ?? "", /JOIN memberships memberships/);
+  assert.match(select ?? "", /memberships\.user_id = app\.current_user_id\(\)/);
+  assert.match(select ?? "", /runs\.requested_by = app\.current_user_id\(\)/);
+});
