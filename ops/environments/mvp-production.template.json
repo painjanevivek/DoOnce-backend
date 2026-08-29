@@ -1,31 +1,89 @@
 {
   "schemaVersion": 1,
-  "environment": "pilot-production",
-  "providerDecision": "PENDING_FOUNDER_GATE_B",
-  "topology": {
-    "frontend": "one immutable HTTPS deployment",
-    "api": "one immutable HTTPS deployment; no worker process",
-    "database": "managed PostgreSQL with encrypted backups and point-in-time recovery",
-    "artifacts": "encrypted persistent volume or object-store adapter",
-    "secrets": "provider secret manager",
-    "observability": "private metrics scrape, OTLP traces, and tested alert delivery"
+  "format": "doonce.mvp-production-decision.v1",
+  "provider": {
+    "name": "render",
+    "project": "doonce-pilot-production",
+    "region": "singapore",
+    "regionReconfirmed": false,
+    "monthlyHardBudgetUsd": 150,
+    "paidPostgres": true,
+    "pitrEnabled": true,
+    "pitrDays": 7
   },
-  "requiredDecisions": [
-    "provider/project and budget ceiling",
-    "frontend and API hostnames plus DNS owner",
-    "final Chrome extension ID and publisher",
-    "primary and backup operations owners",
-    "backup retention and approved recovery objectives",
-    "alert delivery destinations"
+  "topology": {
+    "frontendServices": 1,
+    "apiServices": 1,
+    "workerServices": 0,
+    "additionalServicesApproved": false
+  },
+  "domains": {
+    "proposedFrontendOrigin": "https://pilot.doonce.dev",
+    "proposedApiOrigin": "https://api-pilot.doonce.dev",
+    "registrarControlVerified": false,
+    "cloudflareZoneAccessVerified": false,
+    "evidenceReference": null
+  },
+  "accountAccess": [
+    { "id": "render", "authenticatedLocally": false, "accountOwner": null, "evidenceReference": null },
+    { "id": "cloudflare", "authenticatedLocally": false, "accountOwner": null, "evidenceReference": null },
+    { "id": "chrome-web-store", "authenticatedLocally": false, "accountOwner": null, "evidenceReference": null }
   ],
-  "failClosedDefaults": {
-    "hostedExecution": false,
-    "workers": false,
-    "schedules": false,
-    "webhooks": false,
-    "textAuthoring": false,
-    "videoAuthoring": false,
-    "automaticRepair": false,
-    "invitationCreationInApi": false
-  }
+  "distribution": {
+    "primary": "unlisted-chrome-web-store",
+    "fallback": "checksum-verified-manual",
+    "fallbackAudience": "three-named-pilots-only",
+    "extensionId": null,
+    "installUrl": null,
+    "publisherApprovalReference": null
+  },
+  "retention": {
+    "rawCapturesDays": 14,
+    "abandonedCapturesDays": 7,
+    "downloadedArtifactsDays": 7,
+    "receiptAuditEvidenceMonths": 12,
+    "operationalLogsDays": 30,
+    "securityIncidentLogsDays": 180,
+    "supportRecordsMonthsAfterClosure": 12,
+    "pitrDays": 7,
+    "logicalBackupFrequency": "weekly",
+    "logicalBackupRetentionDays": 30,
+    "legalHoldOnlyException": true,
+    "neverRetain": ["credentials", "otps", "captcha-data", "page-bodies"],
+    "enforcementEvidenceReference": null
+  },
+  "accountabilities": [
+    { "id": "operations", "primary": null, "backup": null, "reviewers": [], "acceptedAt": null, "evidenceReference": null },
+    { "id": "privacy", "primary": null, "backup": null, "reviewers": [], "acceptedAt": null, "evidenceReference": null },
+    { "id": "chrome-publishing", "primary": null, "backup": null, "reviewers": [], "acceptedAt": null, "evidenceReference": null },
+    { "id": "legal", "primary": null, "backup": null, "reviewers": [], "acceptedAt": null, "evidenceReference": null },
+    { "id": "launch", "primary": null, "backup": null, "reviewers": [], "acceptedAt": null, "evidenceReference": null }
+  ],
+  "pilotAuthorization": {
+    "organization": null,
+    "approverName": null,
+    "approverTitle": null,
+    "exactOrigin": null,
+    "reportPath": null,
+    "reportName": null,
+    "authorizedPilotIds": [],
+    "startsAt": null,
+    "endsAt": null,
+    "evidenceReference": null,
+    "authenticationMethods": [],
+    "fileRemainsOnApprovedOrigin": null
+  },
+  "reportContract": {
+    "fileNamePattern": "^weekly-operations-report-\\d{4}-\\d{2}-\\d{2}\\.csv$",
+    "contentTypes": ["text/csv"],
+    "minimumBytes": 1024,
+    "maximumBytes": 26214400,
+    "historicalDownloads": []
+  },
+  "pilots": [
+    { "pilotId": "pilot-alpha", "organizationRole": null, "taskRecurrence": null, "baselineDurationSeconds": null, "historicalErrorRatePercent": null, "consentEvidenceReference": null, "observer": null, "observedAt": null },
+    { "pilotId": "pilot-bravo", "organizationRole": null, "taskRecurrence": null, "baselineDurationSeconds": null, "historicalErrorRatePercent": null, "consentEvidenceReference": null, "observer": null, "observedAt": null },
+    { "pilotId": "pilot-charlie", "organizationRole": null, "taskRecurrence": null, "baselineDurationSeconds": null, "historicalErrorRatePercent": null, "consentEvidenceReference": null, "observer": null, "observedAt": null }
+  ],
+  "valueThresholdSeconds": 300
 }

@@ -11,7 +11,10 @@
       "kind": "file-downloaded",
       "fileNamePattern": null,
       "contentTypes": [],
-      "minimumBytes": null
+      "minimumBytes": null,
+      "maximumBytes": null,
+      "sameOriginRequired": true,
+      "receiptMetadata": ["file-name", "content-type", "byte-size", "sha256", "origin"]
     },
     "includedActions": [
       "navigate",
@@ -29,12 +32,28 @@
       "hosted-execution",
       "schedules",
       "webhooks",
-      "multiple-origins"
+      "multiple-origins",
+      "cross-origin-downloads",
+      "captcha-automation"
     ]
   },
   "pilots": [
     {
-      "pilotId": null,
+      "pilotId": "pilot-alpha",
+      "organizationRole": null,
+      "taskRecurrence": null,
+      "baselineDurationSeconds": null,
+      "historicalErrorRatePercent": null
+    },
+    {
+      "pilotId": "pilot-bravo",
+      "organizationRole": null,
+      "taskRecurrence": null,
+      "baselineDurationSeconds": null,
+      "historicalErrorRatePercent": null
+    },
+    {
+      "pilotId": "pilot-charlie",
       "organizationRole": null,
       "taskRecurrence": null,
       "baselineDurationSeconds": null,
@@ -43,7 +62,7 @@
   ],
   "valueThreshold": {
     "metric": "time-saved-per-run-seconds",
-    "minimum": null,
+    "minimum": 300,
     "proposedPilotPriceMinorUnits": null,
     "currency": null
   },

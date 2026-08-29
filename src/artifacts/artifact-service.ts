@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import type { AuthenticatedUser } from "../auth/auth-service.js";
 
 export type ArtifactRetentionClass = "debug" | "workflow-output" | "publication-evidence" | "pinned";
+export const artifactRetentionDays = { debug: 7, "workflow-output": 7, "publication-evidence": 365 } as const;
 export interface ArtifactMetadata { id: string; runId: string; stepId?: string; retentionClass: ArtifactRetentionClass; fileName: string; contentType: string; byteSize: number; checksumSha256: string; storageKey: string; createdAt: string; expiresAt: string | null; pinnedAt: string | null }
 export interface ArtifactObjectStore { put(key: string, bytes: Uint8Array): Promise<void>; get(key: string): Promise<Uint8Array | undefined>; delete(key: string): Promise<void> }
 export interface ArtifactMetadataStore {
@@ -80,6 +81,7 @@ function parseArtifactInput(value: unknown, maxBytes: number): { fileName: strin
   if (typeof value.fileName !== "string" || !/^[^\\/:*?"<>|\r\n]{1,240}$/.test(value.fileName)) throw new ArtifactInputError("Artifact file name is invalid.");
   if (typeof value.contentType !== "string" || !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i.test(value.contentType) || value.contentType.length > 120) throw new ArtifactInputError("Artifact content type is invalid.");
   if (!isRetention(value.retentionClass) || typeof value.base64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.base64)) throw new ArtifactInputError("Artifact content is invalid.");
+  if (value.retentionClass === "pinned") throw new ArtifactInputError("Indefinite artifact retention requires an approved legal-hold workflow and is disabled.");
   if ((value.retentionClass === "workflow-output" || value.retentionClass === "publication-evidence") && value.stepId === undefined) {
     throw new ArtifactInputError("Verified workflow artifacts require the initiating download step.");
   }
@@ -88,7 +90,7 @@ function parseArtifactInput(value: unknown, maxBytes: number): { fileName: strin
   if (typeof value.leaseToken !== "string" || !/^[A-Za-z0-9_-]{40,64}$/.test(value.leaseToken)) throw new ArtifactInputError("Artifact upload requires the active run lease.");
   return { fileName: value.fileName, contentType: value.contentType.toLowerCase(), retentionClass: value.retentionClass, ...(value.stepId === undefined ? {} : { stepId: uuid(value.stepId) }), bytes, leaseToken: value.leaseToken };
 }
-function retentionExpiry(retention: ArtifactRetentionClass, now: Date): string | null { const days = retention === "debug" ? 7 : retention === "workflow-output" ? 30 : retention === "publication-evidence" ? 365 : 0; return days ? new Date(now.getTime() + days * 86_400_000).toISOString() : null; }
+function retentionExpiry(retention: ArtifactRetentionClass, now: Date): string | null { const days = retention === "pinned" ? undefined : artifactRetentionDays[retention]; return days ? new Date(now.getTime() + days * 86_400_000).toISOString() : null; }
 function isRetention(value: unknown): value is ArtifactRetentionClass { return value === "debug" || value === "workflow-output" || value === "publication-evidence" || value === "pinned"; }
 function uuid(value: unknown): string { if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new ArtifactInputError("A valid identifier is required."); return value; }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }

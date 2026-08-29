@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuthenticatedUser } from "../src/auth/auth-service.js";
-import { ArtifactInputError, ArtifactService, type ArtifactMetadata, type ArtifactMetadataStore, type ArtifactObjectStore } from "../src/artifacts/artifact-service.js";
+import { artifactRetentionDays, ArtifactInputError, ArtifactService, type ArtifactMetadata, type ArtifactMetadataStore, type ArtifactObjectStore } from "../src/artifacts/artifact-service.js";
 
 const user: AuthenticatedUser = { tenantId: "11111111-1111-4111-8111-111111111111", userId: "22222222-2222-4222-8222-222222222222", email: "owner@example.test", role: "owner" };
 const runId = "33333333-3333-4333-8333-333333333333";
@@ -20,7 +20,7 @@ class MemoryMetadata implements ArtifactMetadataStore {
 test("stores artifact bytes separately with checksum, content type, and retention", async () => {
   const metadata = new MemoryMetadata(); const objects = new MemoryObjects(); const service = new ArtifactService(metadata, objects, "artifact-signing-secret-that-is-long-enough");
   const artifact = await service.create(user, runId, { fileName: "report.csv", contentType: "text/csv", retentionClass: "workflow-output", stepId, base64: Buffer.from("a,b\n1,2\n").toString("base64"), leaseToken });
-  assert.equal(artifact.byteSize, 8); assert.equal(artifact.checksumSha256.length, 64); assert.match(artifact.expiresAt!, /^\d{4}-/); assert.equal((await service.list(user, runId)).length, 1);
+  assert.equal(artifact.byteSize, 8); assert.equal(artifact.checksumSha256.length, 64); assert.match(artifact.expiresAt!, /^\d{4}-/); assert.equal((Date.parse(artifact.expiresAt!) - Date.parse(artifact.createdAt)) / 86_400_000, artifactRetentionDays["workflow-output"]); assert.equal((await service.list(user, runId)).length, 1);
 });
 test("creates a signed expiring grant and verifies bytes before download", async () => {
   const metadata = new MemoryMetadata(); const objects = new MemoryObjects(); const service = new ArtifactService(metadata, objects, "artifact-signing-secret-that-is-long-enough");
@@ -31,7 +31,8 @@ test("creates a signed expiring grant and verifies bytes before download", async
 test("removes expired evidence but retains pinned artifacts", async () => {
   const metadata = new MemoryMetadata(); const objects = new MemoryObjects(); const service = new ArtifactService(metadata, objects, "artifact-signing-secret-that-is-long-enough");
   const debug = await service.create(user, runId, { fileName: "debug.txt", contentType: "text/plain", retentionClass: "debug", base64: Buffer.from("debug").toString("base64"), leaseToken });
-  const pinned = await service.create(user, runId, { fileName: "keep.txt", contentType: "text/plain", retentionClass: "pinned", base64: Buffer.from("keep").toString("base64"), leaseToken });
+  const pinned: ArtifactMetadata = { id: "55555555-5555-4555-8555-555555555555", runId, fileName: "legal-hold.txt", contentType: "text/plain", retentionClass: "pinned", byteSize: 4, checksumSha256: "a".repeat(64), storageKey: `${user.tenantId}/${runId}/legal-hold`, createdAt: "2026-08-29T00:00:00.000Z", expiresAt: null, pinnedAt: "2026-08-29T00:00:00.000Z" };
+  metadata.values.set(pinned.id, pinned); objects.values.set(pinned.storageKey, Buffer.from("keep"));
   assert.equal(await service.cleanup(user, new Date("2100-01-01T00:00:00.000Z")), 1); assert.equal(metadata.values.has(debug.id), false); assert.equal(metadata.values.has(pinned.id), true);
 });
 test("rejects malformed base64 and oversized artifacts", async () => {
@@ -40,4 +41,5 @@ test("rejects malformed base64 and oversized artifacts", async () => {
   await assert.rejects(() => service.create(user, runId, { fileName: "large.txt", contentType: "text/plain", retentionClass: "debug", base64: Buffer.from("12345").toString("base64"), leaseToken }), ArtifactInputError);
   await assert.rejects(() => service.create(user, runId, { fileName: "missing-lease.txt", contentType: "text/plain", retentionClass: "debug", base64: Buffer.from("ok").toString("base64") }), /active run lease/);
   await assert.rejects(() => service.create(user, runId, { fileName: "unbound.csv", contentType: "text/csv", retentionClass: "workflow-output", base64: Buffer.from("ok").toString("base64"), leaseToken }), /initiating download step/);
+  await assert.rejects(() => service.create(user, runId, { fileName: "forever.csv", contentType: "text/csv", retentionClass: "pinned", base64: Buffer.from("ok").toString("base64"), leaseToken }), /legal-hold workflow/);
 });

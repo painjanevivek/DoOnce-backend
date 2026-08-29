@@ -196,6 +196,8 @@ Tasks:
 9. Rehearse application rollback to the previous immutable image and database recovery to a new database. Record owners, evidence links, recovery point, and elapsed time.
 10. Test workflow disable and the expanded execution kill switch from the operator path.
 
+Use `ops/environments/mvp-production.template.json` as an external evidence template and run `npm run production:check -- --file=<secure-production-decision.json>`. The checker separates provisioning readiness from pilot readiness and rejects unverified domain/account control, unreconfirmed region, budget or topology drift, unnamed owners, unsafe retention, missing written authorization, cross-origin downloads, incomplete historical samples, and synthetic pilot baselines.
+
 **Exit gate:** the named environment has an immutable release record, green readiness, verified RLS, tested alerts, successful backup restore, rollback evidence, and all non-MVP capabilities disabled.
 
 **Expected effort:** 2–4 engineering days after provider/DNS access is available.
